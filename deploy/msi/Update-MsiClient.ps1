@@ -76,8 +76,9 @@ function Assert($cond, $msg) {
 }
 
 $installer = New-Object -ComObject WindowsInstaller.Installer
-# 1 = msiOpenDatabaseModeTransact: changes are only written on Commit.
-$db = $installer.OpenDatabase($MsiPath, 1)
+# Read only: the MSI is rebuilt into a fresh database below rather than edited
+# in place (see "rebuild the package").
+$db = $installer.OpenDatabase($MsiPath, 0)
 
 # The name inside the cabinet is the File table's key, not the name on disk.
 $fileRows = Get-Rows $db "SELECT File, FileName FROM File" 2
@@ -132,15 +133,58 @@ try {
     }
     Write-Host "Rebuilt cabinet ($((Get-Item $newCab).Length) bytes)"
 
-    # ---- swap it in and correct the recorded size -------------------------
-    # _Streams will not take a stream as a query parameter, so fetch the row and
-    # change it in place. 2 = msiViewModifyUpdate.
-    $view = $db.OpenView("SELECT Name, Data FROM _Streams WHERE Name = '$cabName'")
+    # ---- rebuild the package from its own tables ----------------------------
+    # Editing the wixl-built MSI in place corrupted it. Its string pool
+    # under-counts strings that several rows share. In 1.0.2 "Foghorn" was
+    # both the Manufacturer and the install folder's name. When 1.0.3 changed
+    # the Manufacturer, the count reached zero and the folder lost its name, so
+    # msiexec installed into "C:\Program Files\#_PatchCache\" (1.0.3) and
+    # "...\PatchId\" (1.1.0) instead of "...\Foghorn\".
+    #
+    # Exporting every table and importing it into a new database makes Windows
+    # Installer build the string pool itself, with correct counts. Every later
+    # edit is safe.
+    $idt = Join-Path $work 'idt'
+    New-Item -ItemType Directory -Force $idt | Out-Null
+    $tables = @(foreach ($r in (Get-Rows $db "SELECT Name FROM _Tables" 1)) { $r[0] })
+    $db.Export('_ForceCodepage', $idt, '_ForceCodepage.idt')
+    $db.Export('_SummaryInformation', $idt, '_SummaryInformation.idt')
+    foreach ($t in $tables) { $db.Export($t, $idt, "$t.idt") }
+    [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($db)
+    $db = $null
+
+    # Folder names come from FoghornClient.wxs. That repairs the ones the
+    # corruption above already blanked out of earlier MSIs, and it has to happen
+    # in the exported file: a new database will not take a blank DefaultDir.
+    $names = @{}
+    foreach ($dir in $wxsXml.SelectNodes('//*[local-name()="Directory"][@Name]')) { $names[$dir.Id] = $dir.Name }
+    $dirIdt = Join-Path $idt 'Directory.idt'
+    $lines = Get-Content $dirIdt
+    for ($i = 3; $i -lt $lines.Count; $i++) {   # after the three header lines
+        $cols = $lines[$i] -split "`t", -1
+        if ($names.ContainsKey($cols[0]) -and $cols[2] -ne $names[$cols[0]]) {
+            Write-Host "Repaired: folder $($cols[0]) was '$($cols[2])', now '$($names[$cols[0]])'"
+            $cols[2] = $names[$cols[0]]
+            $lines[$i] = $cols -join "`t"
+        }
+    }
+    Set-Content $dirIdt $lines -Encoding ASCII
+
+    $rebuilt = Join-Path $work 'rebuilt.msi'
+    $db = $installer.OpenDatabase($rebuilt, 3)   # 3 = msiOpenDatabaseModeCreate
+    $db.Import($idt, '_ForceCodepage.idt')
+    foreach ($t in $tables) { $db.Import($idt, "$t.idt") }
+    $db.Import($idt, '_SummaryInformation.idt')
+
+    # ---- put the cabinet in and correct the recorded size -------------------
+    # _Streams will not take a stream as a query parameter, so build the row
+    # and insert it. 1 = msiViewModifyInsert.
+    $view = $db.OpenView("SELECT Name, Data FROM _Streams")
     [void]$view.Execute($null)
-    $rec = $view.Fetch()
-    if (-not $rec) { throw "the MSI has no embedded cabinet called $cabName" }
+    $rec = $installer.CreateRecord(2)
+    $rec.StringData(1) = $cabName
     $rec.SetStream(2, $newCab)
-    [void]$view.Modify(2, $rec)
+    [void]$view.Modify(1, $rec)
     [void]$view.Close()
 
     $view = $db.OpenView("UPDATE File SET FileSize = $newSize WHERE File = '$fileKey'")
@@ -160,14 +204,15 @@ try {
             [void]$view.Execute($null)
             [void]$view.Close()
         }
-        # 9 = PID_REVNUMBER, the package code. Every distinct MSI needs its own.
-        $si = $db.SummaryInformation(1)
-        $si.Property(9) = '{' + [guid]::NewGuid().ToString().ToUpper() + '}'
-        $si.Persist()
-        [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($si)
         Write-Host "Version:  raised to $wxsVersion, new ProductCode $newProductCode"
         $msiVersion = $wxsVersion
     }
+    # 9 = PID_REVNUMBER, the package code. Every distinct MSI needs its own, and
+    # this one carries a different client whether or not the version moved.
+    $si = $db.SummaryInformation(1)
+    $si.Property(9) = '{' + [guid]::NewGuid().ToString().ToUpper() + '}'
+    $si.Persist()
+    [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($si)
 
     # ---- bring the plain properties into line -----------------------------
     # Manufacturer is the Publisher column in Apps and Features; the ARP*
@@ -193,6 +238,11 @@ try {
     }
 
     $db.Commit()
+    [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($db)
+    $db = $null
+    [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+    Copy-Item $rebuilt $MsiPath -Force
+    Write-Host "Rebuilt the package from its tables (fresh string pool)"
 }
 finally {
     # Every COM handle has to go before the MSI can be opened again, or the
@@ -250,6 +300,10 @@ try {
     if ($p.ExitCode -ne 0) { throw "could not unpack the MSI to check it (msiexec exit $($p.ExitCode))" }
     $placed = Get-ChildItem $extract -Recurse -Filter 'FoghornClient.exe' | Select-Object -First 1
     if (-not $placed) { throw "the unpacked MSI contains no FoghornClient.exe" }
+    # Not just "somewhere": 1.0.3 shipped an MSI that put the client in
+    # "#_PatchCache\" and still passed a check that only looked for the file.
+    $folder = $wxsXml.SelectSingleNode('//*[local-name()="Directory"][@Id="INSTALLDIR"]').Name
+    Assert ($placed.Directory.Name -eq $folder) "the client installs into a folder called $folder (got '$($placed.Directory.Name)')"
     Assert ((Get-FileHash $placed.FullName -Algorithm SHA256).Hash -eq (Get-FileHash $ExePath -Algorithm SHA256).Hash) `
            'the client the MSI installs is byte-for-byte the one in dist\'
 }

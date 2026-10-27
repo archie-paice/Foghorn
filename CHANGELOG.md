@@ -48,6 +48,21 @@ against a 1.1 server and shows alerts in the 1.0 style, but cannot be locked.
     notification channel.
 
 ### Fixed
+- **The 1.0.3 MSI installed the client into the wrong folder:**
+  `C:\Program Files\#_PatchCache\` instead of `C:\Program Files\Foghorn\`.
+  The MSI built on Linux by wixl under-counts strings that several rows share.
+  "Foghorn" was both the Manufacturer and the folder name, so when 1.0.3
+  changed the Manufacturer in place, the folder's name was freed with it.
+  `Update-MsiClient.ps1` now rebuilds the MSI from its own tables into a fresh
+  database instead of editing it in place. It restores folder names from
+  `FoghornClient.wxs`, and its self-check now fails unless the client lands in
+  `Foghorn\`, not merely somewhere. Installing 1.1.0 upgrades 1.0.3 in place
+  and removes the misplaced copy. PCs that took 1.0.3 need nothing else.
+- **CI never ran.** Both workflows set job-level `env` from `runner.temp`,
+  which GitHub rejects, so every run failed in 0 seconds without testing
+  anything. Once that was fixed they found the MSI fault above. The client
+  test also started its server in a separate step, and Windows runners end a
+  step's processes when it finishes.
 - The 1.0.3 web console credit is now in the shipped server binaries. They
   were rebuilt, which also fixes `foghorn-server version` reporting 1.0.0.
 - `reset-password` on Linux now says `sudo systemctl stop foghorn` instead of
