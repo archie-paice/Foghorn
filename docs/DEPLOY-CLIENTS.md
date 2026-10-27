@@ -196,6 +196,10 @@ If a PC does not get it, go to
 
 ### Upgrading to a new client version
 
+**From 1.2, PCs can update from the web console** (Updates → roll out). See
+[UPDATING.md](UPDATING.md), including how that fits with a Group Policy
+deployment. To upgrade through Group Policy instead:
+
 1. Copy the new `FoghornClient.msi` over the old one on the share.
 2. In the GPO editor, right-click the package → **All Tasks → Redeploy
    application**.
@@ -328,6 +332,7 @@ Detection rule: `C:\Program Files\Foghorn\FoghornClient.exe` exists. Exit code
 | Program | `C:\Program Files\Foghorn\FoghornClient.exe` |
 | Settings (only if you passed them, or the MST set them) | `HKLM\SOFTWARE\Foghorn` → `ServerUrl`, `ClientKey`, optionally `UseSystemProxy` |
 | Start at log-on | `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run` → `FoghornClient` |
+| Updater service *(MSI, from 1.2)* | **Foghorn Updater** (`FoghornUpdater`): `FoghornClient.exe --service` as LocalSystem, automatic start. Installs releases an administrator rolls out from the console ([UPDATING.md](UPDATING.md)). Removed with the MSI. |
 | Watchdog *(script installer only)* | Scheduled task **Foghorn Client Watchdog**: runs as the logged-on user at log-on and every 5 minutes; does nothing if the client is already running. |
 | Install log *(script installer only)* | `C:\Windows\Temp\FoghornClient-install.log` |
 
@@ -358,3 +363,5 @@ least twice a minute), so a change never needs a log-off.
 | `FoghornClient.exe --test` | Shows one alert of each style. Needs no server. |
 | `FoghornClient.exe --status` | Shows the settings in use, what the PC reports about itself, and tests the connection. |
 | `FoghornClient.exe --server URL --key KEY` | Runs against a different server, for testing. |
+| `FoghornClient.exe --update-now` | As administrator: asks the updater service to check for an update straight away. |
+| `FoghornClient.exe --test-lock` | Locks this screen for 10 seconds, to see what a lock looks like. |

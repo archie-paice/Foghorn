@@ -6,11 +6,16 @@
      If they are left out, empty values are written and the client ignores them, taking its
      settings from Group Policy (Foghorn.admx) instead - which is the recommended way with an MSI.  -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="*" Name="Foghorn Client" Language="1033" Version="1.1.0" Manufacturer="Archie Paice"
+  <Product Id="*" Name="Foghorn Client" Language="1033" Version="1.2.0" Manufacturer="Archie Paice"
            UpgradeCode="7B0E5C0A-6E0B-4B7E-9C55-5A1C1F0D7A11">
     <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine"
              Description="Foghorn desktop alert client" />
-    <MajorUpgrade DowngradeErrorMessage="A newer version of the Foghorn client is already installed." />
+    <!-- afterInstallInitialize: the old version is removed inside the same
+         transaction as the new one is installed, so if an unattended update
+         fails, Windows Installer rolls back to the old version instead of
+         leaving the PC with no client at all. -->
+    <MajorUpgrade Schedule="afterInstallInitialize"
+                  DowngradeErrorMessage="A newer version of the Foghorn client is already installed." />
     <Media Id="1" Cabinet="foghorn.cab" EmbedCab="yes" />
     <Property Id="SERVERURL" Secure="yes" />
     <Property Id="CLIENTKEY" Secure="yes" />
@@ -27,6 +32,13 @@
         <Directory Id="INSTALLDIR" Name="Foghorn">
           <Component Id="ClientExe" Guid="3E0F3D8B-1C57-4E63-8E0C-0D7A1B2C9F01" Win64="yes">
             <File Id="FoghornClientExe" Name="FoghornClient.exe" Source="../../dist/FoghornClient.exe" KeyPath="yes" />
+            <!-- The updater: the same program run as a service by SYSTEM, which
+                 installs releases an administrator rolls out from the console.
+                 See docs/UPDATING.md. -->
+            <ServiceInstall Id="Updater" Name="FoghornUpdater" DisplayName="Foghorn Updater"
+                            Description="Installs Foghorn client updates approved in the Foghorn web console, from the project's GitHub releases."
+                            Type="ownProcess" Start="auto" ErrorControl="normal" Account="LocalSystem" Arguments="--service" Vital="yes" />
+            <ServiceControl Id="UpdaterControl" Name="FoghornUpdater" Start="install" Stop="both" Remove="uninstall" Wait="yes" />
           </Component>
           <Component Id="RunAtLogon" Guid="3E0F3D8B-1C57-4E63-8E0C-0D7A1B2C9F02" Win64="yes">
             <RegistryValue Root="HKLM" Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Run" Name="FoghornClient"

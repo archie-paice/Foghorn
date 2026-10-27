@@ -243,9 +243,13 @@ From the Foghorn folder (copied or `git clone`d onto the server):
 # 1. A system account for the service to run as (no login, no home directory)
 sudo useradd --system --home-dir /var/lib/foghorn --shell /usr/sbin/nologin foghorn
 
-# 2. The program and the systemd unit
-sudo install -m 0755 dist/foghorn-server-linux-amd64 /usr/local/bin/foghorn-server
+# 2. The program (inside the data folder, so it can update itself) and the systemd unit
+sudo install -d -o foghorn -g foghorn -m 0750 /var/lib/foghorn /var/lib/foghorn/bin
+sudo install -o foghorn -g foghorn -m 0755 dist/foghorn-server-linux-amd64 /var/lib/foghorn/bin/foghorn-server
+sudo ln -sf /var/lib/foghorn/bin/foghorn-server /usr/local/bin/foghorn-server
 sudo install -m 0644 deploy/linux/foghorn.service /etc/systemd/system/foghorn.service
+#    RHEL family (SELinux) only - let systemd run a program from there:
+#    sudo semanage fcontext -a -t bin_t '/var/lib/foghorn/bin(/.*)?' && sudo restorecon -Rv /var/lib/foghorn/bin
 
 # 3. Start it now and at every boot
 sudo systemctl daemon-reload
@@ -265,15 +269,15 @@ What that did, so nothing is a mystery:
 | It did this | Why |
 |---|---|
 | Created the `foghorn` system account | The service never runs as root. |
-| Put the program in `/usr/local/bin/foghorn-server` | Standard place for software not managed by the package manager. |
-| systemd created `/var/lib/foghorn` (mode `0750`, owned by `foghorn`) | `StateDirectory=` in the unit. It holds password hashes and the client key. |
+| Put the program in `/var/lib/foghorn/bin/`, with a link at `/usr/local/bin/foghorn-server` | So **Settings → Updates → Update server** can replace it ([UPDATING.md](UPDATING.md)). The link keeps `foghorn-server` working at the command line. |
+| Made `/var/lib/foghorn` (mode `0750`, owned by `foghorn`) | It holds password hashes and the client key. |
 | Started the service with a hardened sandbox | The unit can write **only** to `/var/lib/foghorn`; the rest of the system is read-only to it and `/home` is invisible. It restarts itself if it ever crashes. |
 
 > **The service won't start and `systemctl status` shows `status=203/EXEC`?**
-> The binary is not executable or, on RHEL-family systems, has the wrong
-> SELinux label (usually because it was `mv`ed from a home directory rather
-> than `install`ed). Fix with `sudo chmod 0755 /usr/local/bin/foghorn-server`
-> and `sudo restorecon -v /usr/local/bin/foghorn-server`.
+> The binary is not executable or, on RHEL-family systems, SELinux will not
+> let systemd run it from `/var/lib`. Fix with
+> `sudo chmod 0755 /var/lib/foghorn/bin/foghorn-server`, then the `semanage`
+> and `restorecon` lines from step 2.
 
 ### A.2 Open the firewall
 
@@ -291,7 +295,7 @@ everything, e.g. `sudo ufw allow from 10.20.0.0/16 to any port 8080 proto tcp`.
 
 | Path | Contents |
 |---|---|
-| `/usr/local/bin/foghorn-server` | The program. |
+| `/var/lib/foghorn/bin/foghorn-server` | The program (`/usr/local/bin/foghorn-server` links to it). After an update, the one before is kept beside it as `foghorn-server.old`. |
 | `/etc/systemd/system/foghorn.service` | The service definition. |
 | `/var/lib/foghorn/config.json` | Port and HTTPS settings — same format as [Part 3](#part-3-settings-you-might-change). |
 | `/var/lib/foghorn/state.json`, `alerts.json`, `clients.json` | Accounts, alerts, computers — as in [Part 4](#where-everything-is). |
@@ -364,13 +368,19 @@ seconds is fine; do not lower it.
 | Version | `foghorn-server version` |
 | Back up | `sudo tar czf foghorn-backup-$(date +%F).tgz -C /var/lib foghorn` — safe while running |
 
-**Upgrading** — replace the binary and restart. Data and settings are untouched.
+**Upgrading** — from 1.2 on, use **Settings → Updates → Update server** in the
+console ([UPDATING.md](UPDATING.md)). To do it by hand, or to move an older
+install (program in `/usr/local/bin`) to the layout that can update itself:
 
 ```bash
-sudo install -m 0755 dist/foghorn-server-linux-amd64 /usr/local/bin/foghorn-server
+sudo install -d -o foghorn -g foghorn -m 0750 /var/lib/foghorn/bin
+sudo install -o foghorn -g foghorn -m 0755 dist/foghorn-server-linux-amd64 /var/lib/foghorn/bin/foghorn-server
+sudo ln -sf /var/lib/foghorn/bin/foghorn-server /usr/local/bin/foghorn-server
 sudo install -m 0644 deploy/linux/foghorn.service /etc/systemd/system/foghorn.service
 sudo systemctl daemon-reload && sudo systemctl restart foghorn
 ```
+
+Data and settings are untouched.
 
 **Someone is locked out** (the only administrator):
 
@@ -391,7 +401,7 @@ DNS name — as in [Moving to another machine](#moving-to-another-machine).
 
 ```bash
 sudo systemctl disable --now foghorn
-sudo rm /etc/systemd/system/foghorn.service /usr/local/bin/foghorn-server
+sudo rm /etc/systemd/system/foghorn.service /usr/local/bin/foghorn-server   # the program itself is in /var/lib/foghorn/bin
 sudo systemctl daemon-reload
 sudo rm -rf /var/lib/foghorn          # only if you also want to delete the data
 sudo userdel foghorn

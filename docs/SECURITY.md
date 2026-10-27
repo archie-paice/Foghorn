@@ -22,6 +22,7 @@ not, and what to do about the gaps. Read it before going live.
 | **Sender allowed to lock** | As a sender, plus *Can lock screens* ticked by an administrator | Also lock and unlock screens, only on computers they may send to. |
 | **API token** | The token | Only its scopes: `send` (send, recall, schedule), `lock` (lock and unlock screens), `read` (read history and the computer list). Never settings, accounts, groups, webhooks or uploads. |
 | **A PC with the client key** | The client key | **Receive** alerts and report that it showed them. It cannot send anything. |
+| **Administrator, for updates** | As administrator | Update the server, and roll out client versions to PCs, but **only genuine releases from Foghorn's GitHub**. No one can upload or point PCs at any other file ([Updates](#updates)). |
 
 ## What is built in
 
@@ -127,11 +128,34 @@ are replayed later. Deliveries contain alert titles, computer names and
 usernames, so send them only to systems that may hold that information, and
 use `https://` addresses. Foghorn does not follow redirects when delivering.
 
+## Updates
+
+The PC updater runs as SYSTEM, so it would be the most valuable thing in
+Foghorn to subvert. It's built so that neither the console nor the network
+can choose what it installs:
+
+- **The server names a version, never a file.** Each PC builds the GitHub
+  download address itself, from a repository built into the client. Only an
+  administrator can change that, with a Group Policy value, for forks.
+- **HTTPS from GitHub, with the release's checksum.** Redirects must stay on
+  HTTPS. PCs never downgrade.
+- **The server's own copy is used only over HTTPS**, because over plain HTTP
+  the file and its checksum could both be swapped on the way.
+- **Downloads go where students can't write** (SYSTEM's profile), and the
+  checked file stays locked until Windows Installer has finished with it.
+- **A failed update rolls back** to the version the PC had.
+
+So a stolen administrator password, or traffic interception on your network,
+can at most move PCs to another *genuine, newer* Foghorn release. The
+remaining trust is in the GitHub account that publishes releases: protect it
+with two-factor authentication. Full detail in
+[UPDATING.md](UPDATING.md#why-updates-can-be-trusted).
+
 ## Things Foghorn deliberately does not do
 
 - It does not prevent logging off. A lock blocks the keyboard and mouse, but Ctrl+Alt+Del → Sign out always works (see [Screen locks](#screen-locks)).
 - It does not authenticate individual PCs. Doing that properly means a certificate per machine, which is a lot of machinery for the risk described above.
-- It does not send anything outside your network unless an administrator adds a webhook pointing there. No telemetry, no update checks, no external fonts or scripts in the console.
+- It does not contact the internet by itself. The server checks GitHub only when an administrator presses **Check for updates**, and PCs download from GitHub only during a rollout an administrator started. Nothing goes outside your network otherwise, unless an administrator adds a webhook pointing there. No telemetry, no update checks, no external fonts or scripts in the console.
 
 ## Reporting what the PCs send
 

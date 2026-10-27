@@ -74,6 +74,9 @@ namespace Foghorn
             catch { }
         }
 
+        /// <summary>Applies the network settings above (TLS 1.2+) for code that does not otherwise touch Poller.</summary>
+        public static void Init() { }
+
         public void Start()
         {
             var t = new Thread(Loop);

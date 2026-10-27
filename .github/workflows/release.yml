@@ -1,0 +1,55 @@
+# Publishes a GitHub release from dist/ when a version tag is pushed:
+#
+#   git tag v1.2.0 && git push origin v1.2.0
+#
+# Foghorn servers and PCs update from these releases (docs/UPDATING.md), so a
+# release must be exactly what is in dist/ at that tag, with checksums that
+# match. This refuses to publish if the versions written in the source
+# disagree with the tag, or if SHA256SUMS.txt is stale.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The tag, server, client and MSI all agree on the version
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          server=$(grep -oP 'var version = "\K[^"]+' server/main.go)
+          client=$(grep -oP 'const string Version = "\K[^"]+' client/src/Program.cs)
+          msi=$(grep -oP '<Product [^>]*Version="\K[0-9.]+' deploy/msi/FoghornClient.wxs)
+          echo "tag $tag  server $server  client $client  msi $msi"
+          [ "$tag" = "$server" ] && [ "$tag" = "$client" ] && [ "$tag" = "$msi" ] || { echo "::error::versions disagree"; exit 1; }
+
+      - name: Checksums match dist/
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sed 's/\r$//' SHA256SUMS.txt > /tmp/sums
+          sha256sum -c /tmp/sums
+          for f in FoghornClient.exe FoghornClient.msi foghorn-server.exe foghorn-server-linux-amd64; do
+            grep -q "  $f\$" /tmp/sums || { echo "::error::$f is missing from SHA256SUMS.txt"; exit 1; }
+          done
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          # This version's section of CHANGELOG.md becomes the release notes.
+          awk -v v="## $ver" '$0 == v {on=1; next} on && /^## / {exit} on' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
+          sed 's/\r$//' dist/SHA256SUMS.txt > SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" --title "Foghorn $ver" --notes-file notes.md \
+            dist/FoghornClient.exe dist/FoghornClient.msi dist/foghorn-server.exe dist/foghorn-server-linux-amd64 SHA256SUMS.txt

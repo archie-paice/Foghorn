@@ -112,5 +112,102 @@ namespace Foghorn
         {
             try { return mciSendString(command, null, 0, IntPtr.Zero) == 0; } catch { return false; }
         }
+
+        // ---- starting the desktop client in people's sessions, for the updater ----
+        //
+        // The updater runs as SYSTEM in session 0. After an update it starts the
+        // new client in each signed-in session, as that session's user, on their
+        // desktop - the same as the Run key would at their next logon.
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct WTS_SESSION_INFO { public int SessionId; public IntPtr WinStationName; public int State; }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct STARTUPINFO
+        {
+            public int cb; public string lpReserved, lpDesktop, lpTitle;
+            public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+            public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+
+        [DllImport("wtsapi32.dll", SetLastError = true)]
+        static extern bool WTSEnumerateSessions(IntPtr server, int reserved, int version, out IntPtr sessions, out int count);
+
+        [DllImport("wtsapi32.dll")]
+        static extern void WTSFreeMemory(IntPtr memory);
+
+        [DllImport("wtsapi32.dll", SetLastError = true)]
+        static extern bool WTSQueryUserToken(int sessionId, out IntPtr token);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        static extern bool DuplicateTokenEx(IntPtr token, int access, IntPtr attributes, int impersonationLevel, int tokenType, out IntPtr newToken);
+
+        [DllImport("userenv.dll", SetLastError = true)]
+        static extern bool CreateEnvironmentBlock(out IntPtr environment, IntPtr token, bool inherit);
+
+        [DllImport("userenv.dll")]
+        static extern bool DestroyEnvironmentBlock(IntPtr environment);
+
+        [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        static extern bool CreateProcessAsUser(IntPtr token, string application, string commandLine, IntPtr processAttributes,
+            IntPtr threadAttributes, bool inheritHandles, int flags, IntPtr environment, string currentDirectory,
+            ref STARTUPINFO startup, out PROCESS_INFORMATION info);
+
+        [DllImport("kernel32.dll")]
+        static extern bool CloseHandle(IntPtr handle);
+
+        /// <summary>Sessions with someone signed in: active, or disconnected but still signed in.</summary>
+        public static System.Collections.Generic.List<int> UserSessions()
+        {
+            var list = new System.Collections.Generic.List<int>();
+            IntPtr buffer; int count;
+            try
+            {
+                if (!WTSEnumerateSessions(IntPtr.Zero, 0, 1, out buffer, out count)) return list;
+                int size = Marshal.SizeOf(typeof(WTS_SESSION_INFO));
+                for (int i = 0; i < count; i++)
+                {
+                    var s = (WTS_SESSION_INFO)Marshal.PtrToStructure(new IntPtr(buffer.ToInt64() + i * size), typeof(WTS_SESSION_INFO));
+                    // 0 = WTSActive, 4 = WTSDisconnected. Session 0 is services.
+                    if (s.SessionId != 0 && (s.State == 0 || s.State == 4)) list.Add(s.SessionId);
+                }
+                WTSFreeMemory(buffer);
+            }
+            catch { }
+            return list;
+        }
+
+        /// <summary>Starts exe as the user signed in to session. Returns null, or what went wrong.</summary>
+        public static string StartInSession(int session, string exe)
+        {
+            IntPtr userToken = IntPtr.Zero, primary = IntPtr.Zero, env = IntPtr.Zero;
+            try
+            {
+                if (!WTSQueryUserToken(session, out userToken)) return "no user token (error " + Marshal.GetLastWin32Error() + ")";
+                // MAXIMUM_ALLOWED, SecurityImpersonation, TokenPrimary
+                if (!DuplicateTokenEx(userToken, 0x02000000, IntPtr.Zero, 2, 1, out primary)) return "cannot use the token (error " + Marshal.GetLastWin32Error() + ")";
+                CreateEnvironmentBlock(out env, primary, false);
+                var si = new STARTUPINFO();
+                si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+                si.lpDesktop = @"winsta0\default";
+                PROCESS_INFORMATION pi;
+                const int CREATE_UNICODE_ENVIRONMENT = 0x400;
+                if (!CreateProcessAsUser(primary, exe, "\"" + exe + "\"", IntPtr.Zero, IntPtr.Zero, false, CREATE_UNICODE_ENVIRONMENT,
+                        env, System.IO.Path.GetDirectoryName(exe), ref si, out pi))
+                    return "could not start it (error " + Marshal.GetLastWin32Error() + ")";
+                CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+                return null;
+            }
+            catch (Exception ex) { return ex.Message; }
+            finally
+            {
+                if (env != IntPtr.Zero) DestroyEnvironmentBlock(env);
+                if (primary != IntPtr.Zero) CloseHandle(primary);
+                if (userToken != IntPtr.Zero) CloseHandle(userToken);
+            }
+        }
     }
 }

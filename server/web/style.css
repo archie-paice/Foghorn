@@ -336,3 +336,14 @@ dialog .df { padding: 14px 22px 18px; display: flex; gap: 10px; justify-content:
 .endpoint[open] { padding-bottom: 12px; }
 .verb { font: 700 .75rem Consolas, monospace; padding: 2px 7px; border-radius: 4px; color: #fff; background: var(--muted); min-width: 52px; text-align: center; }
 .verb.get { background: #1d6fb8; } .verb.post { background: #24794b; } .verb.put { background: #c77700; } .verb.delete { background: #c3301c; }
+
+/* ---------- updates ---------- */
+.versions { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip.ver { padding: 5px 13px; }
+.chip.ver.legacy { border-style: dashed; color: var(--muted); }
+.rollout { border: 1px solid var(--line); border-left: 4px solid var(--ok); border-radius: var(--radius); padding: 12px 14px; display: grid; gap: 8px; }
+.rollout.paused { border-left-color: var(--warning); }
+.track.wide { display: block; height: 12px; background: var(--fog); border-radius: 99px; overflow: hidden; border: 1px solid var(--line-soft); }
+.track.wide .bar { display: block; height: 100%; background: var(--ok); }
+.notes summary, .machines summary { cursor: pointer; font-weight: 600; }
+.release-notes { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .9rem; color: var(--ink-soft); margin-top: 8px; max-height: 320px; overflow: auto; }

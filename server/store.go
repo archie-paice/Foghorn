@@ -8,6 +8,8 @@ package main
 //   alerts.json  alert history including per-computer delivery records
 //   locks.json   screen locks, current and recent, with per-computer state
 //   clients.json computers that have checked in
+//   machines.json PCs' updater services and the versions they run
+//   updates/     copies of client MSIs being rolled out
 //   sounds/      uploaded sound files, named by their id
 //
 // There is deliberately no database. A college with a few thousand PCs fits
@@ -20,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -255,6 +258,7 @@ type State struct {
 	Sounds    []*Sound    `json:"sounds"`
 	Schedules []*Schedule `json:"schedules"`
 	Webhooks  []*Webhook  `json:"webhooks"`
+	Updates   UpdateState `json:"updates"`
 }
 
 type ClientInfo struct {
@@ -284,8 +288,10 @@ type Store struct {
 	Alerts  []*Alert // oldest first
 	Locks   []*Lock  // oldest first
 	Clients map[string]*ClientInfo
+	// Machines are PCs' updater services, keyed by lower-case hostname.
+	Machines map[string]*Machine
 
-	dirtyState, dirtyAlerts, dirtyLocks, dirtyClients bool
+	dirtyState, dirtyAlerts, dirtyLocks, dirtyClients, dirtyMachines bool
 }
 
 func newID() string {
@@ -308,7 +314,7 @@ func openStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, Clients: map[string]*ClientInfo{}}
+	s := &Store{dir: dir, Clients: map[string]*ClientInfo{}, Machines: map[string]*Machine{}}
 	if err := loadJSON(filepath.Join(dir, "state.json"), &s.State); err != nil {
 		return nil, err
 	}
@@ -330,6 +336,15 @@ func openStore(dir string) (*Store, error) {
 	for _, c := range clients {
 		if c != nil && c.ID != "" {
 			s.Clients[c.ID] = c
+		}
+	}
+	var machines []*Machine
+	if err := loadJSON(filepath.Join(dir, "machines.json"), &machines); err != nil {
+		return nil, err
+	}
+	for _, m := range machines {
+		if m != nil && m.Hostname != "" {
+			s.Machines[strings.ToLower(m.Hostname)] = m
 		}
 	}
 	for _, a := range s.Alerts {
@@ -379,7 +394,7 @@ func writeFileAtomic(path string, data []byte) error {
 // disk I/O happens outside it.
 func (s *Store) flush() error {
 	s.mu.Lock()
-	var stateB, alertsB, locksB, clientsB []byte
+	var stateB, alertsB, locksB, clientsB, machinesB []byte
 	var err error
 	if s.dirtyState {
 		stateB, err = json.MarshalIndent(&s.State, "", "  ")
@@ -406,6 +421,15 @@ func (s *Store) flush() error {
 		clientsB, err = json.Marshal(list)
 		s.dirtyClients = false
 	}
+	if err == nil && s.dirtyMachines {
+		list := make([]*Machine, 0, len(s.Machines))
+		for _, m := range s.Machines {
+			list = append(list, m)
+		}
+		sort.Slice(list, func(i, j int) bool { return list[i].Hostname < list[j].Hostname })
+		machinesB, err = json.Marshal(list)
+		s.dirtyMachines = false
+	}
 	s.mu.Unlock()
 	if err != nil {
 		return err
@@ -422,6 +446,11 @@ func (s *Store) flush() error {
 	}
 	if locksB != nil {
 		if err := writeFileAtomic(filepath.Join(s.dir, "locks.json"), locksB); err != nil {
+			return err
+		}
+	}
+	if machinesB != nil {
+		if err := writeFileAtomic(filepath.Join(s.dir, "machines.json"), machinesB); err != nil {
 			return err
 		}
 	}
@@ -455,6 +484,12 @@ func (s *Store) compactLocked() {
 		if c.polling == 0 && now.Sub(c.LastSeen) > clientForgetAfter {
 			delete(s.Clients, id)
 			s.dirtyClients = true
+		}
+	}
+	for key, m := range s.Machines {
+		if now.Sub(m.LastSeen) > machineForgetAfter {
+			delete(s.Machines, key)
+			s.dirtyMachines = true
 		}
 	}
 }
