@@ -2,6 +2,60 @@
 
 All notable changes to Foghorn are listed here, newest first.
 
+## 1.1.0
+
+New features for teachers and for anyone connecting Foghorn to other systems.
+Upgrade both halves: features that appear on PCs (locks, reply buttons, custom
+sounds, icons and colours) need the 1.1 client. A 1.0 client keeps working
+against a 1.1 server and shows alerts in the 1.0 style, but cannot be locked.
+
+### Added
+- **Alert builder.** *Look and buttons* on the Send page sets an icon, a
+  colour, the band label and the close-button wording, with the live preview
+  following along.
+- **Reply buttons.** Add up to four replies ("I'm safe" / "I need help") to
+  ask a question. The alert stays up until each person answers. Sent alerts
+  shows a live tally and who chose what, and the API reports the same in
+  `totals.responses` and on each delivery.
+- **Lock screens.** Cover chosen PCs with a message (*blank*), or keep the
+  screen visible and block input (*freeze*). Keyboard and mouse are blocked
+  with low-level hooks, and every monitor is covered. Each lock has a time
+  limit that the PC enforces itself. Includes *Unlock* and *Unlock everything*,
+  a per-PC lock state, and a lock that comes back if the client restarts while
+  it is in force. Alerts still show above a lock and can be clicked.
+  Administrators can always lock; senders can when an administrator ticks
+  *Can lock screens*. `FoghornClient.exe --test-lock` shows a 10-second lock.
+  SECURITY.md says plainly what a lock can't stop (Ctrl+Alt+Del).
+- **Custom sounds.** Administrators upload WAV or MP3 files (up to 5 MB) under
+  **Sounds**. Alerts can play one once or **loop until closed**. PCs download
+  each sound once and cache it by content hash. MP3s play through MCI, so
+  nothing extra is installed.
+- **Scheduled alerts.** Send once at a set time, or every week on chosen days.
+  The **Scheduled** page can pause, edit, send now and delete. Runs missed
+  while the server was off are skipped, not sent late.
+- **API for integrations:**
+  - **Token scopes:** `send`, `lock`, `read`. Tokens from 1.0 keep `send` + `read`.
+  - **`Idempotency-Key`** on `POST /api/alerts`, so retries never send twice.
+  - **Webhooks** (Settings → Webhooks): signed JSON POSTs for `alert.sent`,
+    `alert.acknowledged`, `alert.responded`, `alert.recalled`, `lock.started`
+    and `lock.unlocked`, retried on failure, with a **Test** button.
+  - New endpoints for locks, schedules, sounds and `GET /api/meta`.
+  - **`GET /api/openapi.json`** and an **API** page in the console with a
+    quick start and a browsable reference.
+  - **[docs/INTEGRATIONS-LARAVEL.md](docs/INTEGRATIONS-LARAVEL.md)** and
+    drop-in code in `examples/laravel/`: an API client, a webhook controller
+    with signature, age and duplicate checks, an Artisan command and a
+    notification channel.
+
+### Fixed
+- The 1.0.3 web console credit is now in the shipped server binaries. They
+  were rebuilt, which also fixes `foghorn-server version` reporting 1.0.0.
+- `reset-password` on Linux now says `sudo systemctl stop foghorn` instead of
+  the Windows-only `foghorn-server service stop`.
+- In dark mode, the chosen option in a segmented choice (level, display,
+  audience) was drawn in the page colour and could not be seen.
+- At phone width the console was wider than the screen.
+
 ## 1.0.3
 
 Credit where it is due. No functional changes — if 1.0.2 is working on your

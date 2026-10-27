@@ -93,7 +93,7 @@ func TestDeliveryLifecycle(t *testing.T) {
 	if got, _ = s.pendingFor(c, now.Add(2*time.Minute)); len(got) != 1 {
 		t.Fatalf("unconfirmed alert should be resent after a minute, got %+v", got)
 	}
-	s.applyEvents(c, []clientEvent{{"a1", "displayed"}}, now)
+	s.applyEvents(c, []clientEvent{{AlertID: "a1", Event: "displayed"}}, now)
 	if got, _ = s.pendingFor(c, now.Add(5*time.Minute)); len(got) != 0 {
 		t.Fatalf("displayed alert must not be resent to the same session, got %+v", got)
 	}
@@ -102,7 +102,7 @@ func TestDeliveryLifecycle(t *testing.T) {
 	if got, _ = s.pendingFor(c, now); len(got) != 1 {
 		t.Fatalf("unacknowledged alert should reappear after a restart, got %+v", got)
 	}
-	s.applyEvents(c, []clientEvent{{"a1", "displayed"}, {"a1", "acknowledged"}}, now)
+	s.applyEvents(c, []clientEvent{{AlertID: "a1", Event: "displayed"}, {AlertID: "a1", Event: "acknowledged"}}, now)
 	c = s.touchClient(clientHello{Hostname: "LAB1-PC01", User: "amy", SID: "s3"}, "10.0.0.1", now)
 	if got, _ = s.pendingFor(c, now); len(got) != 0 {
 		t.Fatalf("acknowledged alert must never come back, got %+v", got)
@@ -117,7 +117,7 @@ func TestDeliveryLifecycle(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("LAB2 client should get both live alerts, got %+v", got)
 	}
-	s.applyEvents(c2, []clientEvent{{"a2", "displayed"}}, now)
+	s.applyEvents(c2, []clientEvent{{AlertID: "a2", Event: "displayed"}}, now)
 	t2 := now
 	plain.RecalledAt = &t2
 	if _, rec := s.pendingFor(c2, now); len(rec) != 1 || rec[0] != "a2" {

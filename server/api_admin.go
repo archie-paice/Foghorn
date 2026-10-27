@@ -60,6 +60,7 @@ type userView struct {
 	MustChange      bool      `json:"must_change"`
 	Disabled        bool      `json:"disabled"`
 	AllowedGroupIDs []string  `json:"allowed_group_ids"`
+	CanLock         bool      `json:"can_lock"`
 	LastLogin       time.Time `json:"last_login"`
 }
 
@@ -68,7 +69,8 @@ func viewUser(u *User) userView {
 	if g == nil {
 		g = []string{}
 	}
-	return userView{u.ID, u.Username, u.DisplayName, u.Role, u.MustChange, u.Disabled, g, u.LastLogin}
+	return userView{u.ID, u.Username, u.DisplayName, u.Role, u.MustChange, u.Disabled, g,
+		u.Role == "admin" || u.CanLock, u.LastLogin}
 }
 
 func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -154,6 +156,18 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request, id *identity) {
 	a.store.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user": viewUser(&id.User), "org_name": org, "version": version,
+		"via_token": id.ViaToken, "scopes": id.Scopes,
+	})
+}
+
+// handleMeta describes the choices the API accepts, so the console and
+// integrations do not have to hard-code them.
+func (a *App) handleMeta(w http.ResponseWriter, r *http.Request, id *identity) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"version": version, "icons": alertIcons, "scopes": validScopes, "webhook_events": webhookEvents,
+		"levels": []string{"info", "warning", "critical"}, "displays": []string{"corner", "center", "fullscreen"},
+		"lock_modes": []string{"blank", "freeze"}, "max_lock_minutes": maxLockMinutes,
+		"max_sound_bytes": maxSoundBytes, "max_responses": 4,
 	})
 }
 
@@ -209,6 +223,26 @@ type alertView struct {
 	Deliveries    []*Delivery `json:"deliveries,omitempty"`
 }
 
+// tally counts the reply buttons pressed, in the order the buttons appear.
+func (a *Alert) tally() map[string]int {
+	if len(a.Spec.Responses) == 0 {
+		return nil
+	}
+	if a.Archived != nil && a.Archived.Responses != nil {
+		return a.Archived.Responses
+	}
+	out := map[string]int{}
+	for _, r := range a.Spec.Responses {
+		out[r] = 0
+	}
+	for _, d := range a.Deliveries {
+		if d.Response != "" {
+			out[d.Response]++
+		}
+	}
+	return out
+}
+
 func viewAlert(a *Alert, now time.Time, withDeliveries bool) alertView {
 	v := alertView{
 		ID: a.ID, Spec: a.Spec, TargetSummary: a.TargetSummary, Sender: a.Sender,
@@ -216,6 +250,7 @@ func viewAlert(a *Alert, now time.Time, withDeliveries bool) alertView {
 		RecalledAt: a.RecalledAt, RecalledBy: a.RecalledBy, Status: a.status(now),
 		Totals: a.totals(), Archived: a.Archived != nil,
 	}
+	v.Totals.Responses = a.tally()
 	if withDeliveries {
 		v.Deliveries = make([]*Delivery, 0, len(a.Deliveries))
 		for _, d := range a.Deliveries {
@@ -300,6 +335,9 @@ func validateSpec(s *AlertSpec) string {
 			return "The link must be a full http:// or https:// address."
 		}
 	}
+	if msg := validateLook(s); msg != "" {
+		return msg
+	}
 	s.Target.Rules = cleanRules(s.Target.Rules)
 	if s.Target.GroupIDs == nil {
 		s.Target.GroupIDs = []string{}
@@ -309,6 +347,73 @@ func validateSpec(s *AlertSpec) string {
 	}
 	if s.Target.All {
 		s.Target.GroupIDs, s.Target.Rules = []string{}, []Rule{}
+	}
+	return ""
+}
+
+// alertIcons are the symbols the builder offers. The client draws them with
+// the Segoe UI Emoji font that ships with Windows 10 and 11.
+var alertIcons = map[string]string{
+	"info": "\u2139", "warning": "\u26a0", "alarm": "\U0001F6A8", "fire": "\U0001F525",
+	"lock": "\U0001F512", "bell": "\U0001F514", "calendar": "\U0001F4C5", "wrench": "\U0001F527",
+	"megaphone": "\U0001F4E3", "clock": "\u23F0", "check": "\u2705", "heart": "\u2764",
+	"star": "\u2B50", "weather": "\u26C8", "wifi": "\U0001F4F6", "eyes": "\U0001F440",
+}
+
+func validColour(c string) bool {
+	if len(c) != 7 || c[0] != '#' {
+		return false
+	}
+	for _, r := range c[1:] {
+		if !strings.ContainsRune("0123456789abcdef", r) {
+			return false
+		}
+	}
+	return true
+}
+
+// validateLook checks the appearance fields from the builder.
+func validateLook(s *AlertSpec) string {
+	s.Accent = strings.ToLower(strings.TrimSpace(s.Accent))
+	if s.Accent != "" && !validColour(s.Accent) {
+		return "Colour must look like #1d6fb8."
+	}
+	s.Label = cleanText(s.Label, 24)
+	s.DismissLabel = cleanText(s.DismissLabel, 30)
+	s.Icon = strings.TrimSpace(s.Icon)
+	if _, ok := alertIcons[s.Icon]; s.Icon != "" && !ok {
+		return "That icon is not one Foghorn knows."
+	}
+	var replies []string
+	for _, r := range s.Responses {
+		if r = cleanText(r, 30); r != "" {
+			for _, have := range replies {
+				if equalFold(have, r) {
+					return "Each reply button needs different wording."
+				}
+			}
+			replies = append(replies, r)
+		}
+	}
+	if len(replies) > 4 {
+		return "An alert can have at most 4 reply buttons."
+	}
+	s.Responses = replies
+	if s.Responses == nil {
+		s.Responses = []string{}
+	}
+	if len(s.Responses) > 0 {
+		// A question stays up until it is answered, and the answer is the acknowledgement.
+		s.RequireAck = true
+		s.DisplaySeconds = 0
+		s.DismissLabel = ""
+	}
+	s.SoundID = strings.TrimSpace(s.SoundID)
+	if s.SoundID != "" {
+		s.Sound = true
+	}
+	if !s.Sound {
+		s.SoundLoop = false
 	}
 	return ""
 }
@@ -335,38 +440,42 @@ func (s *Store) checkAllowed(u *User, t Target) string {
 	return ""
 }
 
-func (a *App) handleSendAlert(w http.ResponseWriter, r *http.Request, id *identity) {
-	var spec AlertSpec
-	if !readJSON(w, r, &spec, 64<<10) {
-		return
-	}
+type sendFailure struct {
+	status    int
+	code, msg string
+}
+
+// createAlert checks spec and starts delivering it as sender. The console,
+// the API and the scheduler all send through here.
+func (a *App) createAlert(spec AlertSpec, sender *User) (alertView, int, *sendFailure) {
 	if msg := validateSpec(&spec); msg != "" {
-		writeErr(w, http.StatusBadRequest, "invalid", msg)
-		return
+		return alertView{}, 0, &sendFailure{http.StatusBadRequest, "invalid", msg}
 	}
 	now := time.Now()
 	st := a.store
 	st.mu.Lock()
-	if msg := st.checkAllowed(&id.User, spec.Target); msg != "" {
+	if msg := st.checkAllowed(sender, spec.Target); msg != "" {
 		st.mu.Unlock()
-		writeErr(w, http.StatusForbidden, "forbidden", msg)
-		return
+		return alertView{}, 0, &sendFailure{http.StatusForbidden, "forbidden", msg}
 	}
 	for _, gid := range spec.Target.GroupIDs {
 		if st.groupByID(gid) == nil {
 			st.mu.Unlock()
-			writeErr(w, http.StatusBadRequest, "invalid", "One of the chosen groups no longer exists. Reload the page.")
-			return
+			return alertView{}, 0, &sendFailure{http.StatusBadRequest, "invalid", "One of the chosen groups no longer exists. Reload the page."}
 		}
 	}
+	if spec.SoundID != "" && st.soundByID(spec.SoundID) == nil {
+		st.mu.Unlock()
+		return alertView{}, 0, &sendFailure{http.StatusBadRequest, "invalid", "That sound has been deleted. Choose another."}
+	}
 	rules, summary := st.flattenTarget(spec.Target)
-	name := id.User.DisplayName
+	name := sender.DisplayName
 	if name == "" {
-		name = id.User.Username
+		name = sender.Username
 	}
 	al := &Alert{
 		ID: newID(), Spec: spec, Rules: rules, TargetSummary: summary,
-		Sender: id.User.Username, SenderName: name, CreatedAt: now,
+		Sender: sender.Username, SenderName: name, CreatedAt: now,
 		ExpiresAt:  now.Add(time.Duration(spec.ExpiresMinutes) * time.Minute),
 		Deliveries: map[string]*Delivery{},
 	}
@@ -384,7 +493,48 @@ func (a *App) handleSendAlert(w http.ResponseWriter, r *http.Request, id *identi
 	a.hub.wake()
 	a.save()
 	log.Printf("ALERT %s sent by %s to [%s] level=%s display=%s title=%q (%d online now)",
-		al.ID, id.User.Username, summary, spec.Level, spec.Display, spec.Title, reach)
+		al.ID, sender.Username, summary, spec.Level, spec.Display, spec.Title, reach)
+	a.emit("alert.sent", map[string]any{"alert": v, "online_reach": reach})
+	return v, reach, nil
+}
+
+func (a *App) handleSendAlert(w http.ResponseWriter, r *http.Request, id *identity) {
+	var spec AlertSpec
+	if !readJSON(w, r, &spec, 64<<10) {
+		return
+	}
+	// Idempotency-Key lets a script or a queued job retry safely: the same key
+	// from the same caller within a day returns the alert it already sent.
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if len(key) > 200 {
+		writeErr(w, http.StatusBadRequest, "invalid", "Idempotency-Key is too long (200 characters at most).")
+		return
+	}
+	if key != "" {
+		unlock := a.idem.lock()
+		defer unlock()
+		if prev := a.idem.get(id.User.ID + "|" + key); prev != "" {
+			a.store.mu.Lock()
+			al := a.store.alertByID(prev)
+			var v alertView
+			if al != nil {
+				v = viewAlert(al, time.Now(), false)
+			}
+			a.store.mu.Unlock()
+			if al != nil {
+				writeJSON(w, http.StatusOK, map[string]any{"alert": v, "online_reach": v.Totals.Sent, "replayed": true})
+				return
+			}
+		}
+	}
+	v, reach, fail := a.createAlert(spec, &id.User)
+	if fail != nil {
+		writeErr(w, fail.status, fail.code, fail.msg)
+		return
+	}
+	if key != "" {
+		a.idem.put(id.User.ID+"|"+key, v.ID)
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{"alert": v, "online_reach": reach})
 }
 
@@ -412,6 +562,7 @@ func (a *App) handleRecallAlert(w http.ResponseWriter, r *http.Request, id *iden
 	a.hub.wake()
 	a.save()
 	log.Printf("ALERT %s recalled by %s", al.ID, id.User.Username)
+	a.emit("alert.recalled", map[string]any{"alert": v, "recalled_by": id.User.Username})
 	writeJSON(w, http.StatusOK, v)
 }
 
@@ -670,6 +821,7 @@ type userRequest struct {
 	Role            string   `json:"role"`
 	Disabled        bool     `json:"disabled"`
 	AllowedGroupIDs []string `json:"allowed_group_ids"`
+	CanLock         bool     `json:"can_lock"`
 	ResetPassword   bool     `json:"reset_password"`
 }
 
@@ -715,7 +867,7 @@ func (a *App) handleSaveUser(w http.ResponseWriter, r *http.Request, id *identit
 		writeErr(w, http.StatusConflict, "last_admin", "This is the only administrator. Make someone else an administrator first.")
 		return
 	}
-	u.DisplayName, u.Role, u.Disabled = req.DisplayName, req.Role, req.Disabled
+	u.DisplayName, u.Role, u.Disabled, u.CanLock = req.DisplayName, req.Role, req.Disabled, req.CanLock
 	allowed := []string{}
 	for _, gid := range req.AllowedGroupIDs {
 		if st.groupByID(gid) != nil {
@@ -782,10 +934,11 @@ func (a *App) handleGetSettings(w http.ResponseWriter, r *http.Request, id *iden
 		CreatedBy string    `json:"created_by"`
 		CreatedAt time.Time `json:"created_at"`
 		LastUsed  time.Time `json:"last_used"`
+		Scopes    []string  `json:"scopes"`
 	}
 	toks := make([]tv, 0, len(a.store.State.Tokens))
 	for _, t := range a.store.State.Tokens {
-		toks = append(toks, tv{t.ID, t.Name, t.CreatedBy, t.CreatedAt, t.LastUsed})
+		toks = append(toks, tv{t.ID, t.Name, t.CreatedBy, t.CreatedAt, t.LastUsed, tokenScopes(t)})
 	}
 	a.store.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -822,7 +975,8 @@ func (a *App) handleRotateKey(w http.ResponseWriter, r *http.Request, id *identi
 
 func (a *App) handleCreateToken(w http.ResponseWriter, r *http.Request, id *identity) {
 	var req struct {
-		Name string `json:"name"`
+		Name   string   `json:"name"`
+		Scopes []string `json:"scopes"`
 	}
 	if !readJSON(w, r, &req, 8<<10) {
 		return
@@ -832,15 +986,33 @@ func (a *App) handleCreateToken(w http.ResponseWriter, r *http.Request, id *iden
 		writeErr(w, http.StatusBadRequest, "invalid", "Name the token after what will use it, e.g. \"Fire panel script\".")
 		return
 	}
+	if req.Scopes == nil {
+		req.Scopes = []string{"send", "read"}
+	}
+	scopes := []string{}
+	for _, sc := range req.Scopes {
+		if _, ok := validScopes[sc]; !ok {
+			writeErr(w, http.StatusBadRequest, "invalid", "Scopes can be send, lock and read.")
+			return
+		}
+		if !hasScope(scopes, sc) {
+			scopes = append(scopes, sc)
+		}
+	}
+	if len(scopes) == 0 {
+		writeErr(w, http.StatusBadRequest, "invalid", "Give the token at least one thing it may do.")
+		return
+	}
+	sort.Strings(scopes)
 	secret := "fh_" + randomSecret(24)
-	t := &Token{ID: newID(), Name: req.Name, Hash: hashToken(secret), CreatedBy: id.User.Username, CreatedAt: time.Now()}
+	t := &Token{ID: newID(), Name: req.Name, Hash: hashToken(secret), Scopes: scopes, CreatedBy: id.User.Username, CreatedAt: time.Now()}
 	a.store.mu.Lock()
 	a.store.State.Tokens = append(a.store.State.Tokens, t)
 	a.store.dirtyState = true
 	a.store.mu.Unlock()
 	a.save()
-	log.Printf("API token %q created by %s", req.Name, id.User.Username)
-	writeJSON(w, http.StatusCreated, map[string]string{"id": t.ID, "name": t.Name, "token": secret})
+	log.Printf("API token %q created by %s with scopes %v", req.Name, id.User.Username, scopes)
+	writeJSON(w, http.StatusCreated, map[string]any{"id": t.ID, "name": t.Name, "token": secret, "scopes": scopes})
 }
 
 func (a *App) handleDeleteToken(w http.ResponseWriter, r *http.Request, id *identity) {

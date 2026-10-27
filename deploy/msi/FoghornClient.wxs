@@ -6,7 +6,7 @@
      If they are left out, empty values are written and the client ignores them, taking its
      settings from Group Policy (Foghorn.admx) instead - which is the recommended way with an MSI.  -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="*" Name="Foghorn Client" Language="1033" Version="1.0.3" Manufacturer="Archie Paice"
+  <Product Id="*" Name="Foghorn Client" Language="1033" Version="1.1.0" Manufacturer="Archie Paice"
            UpgradeCode="7B0E5C0A-6E0B-4B7E-9C55-5A1C1F0D7A11">
     <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine"
              Description="Foghorn desktop alert client" />

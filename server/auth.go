@@ -222,7 +222,46 @@ func (t *throttle) reset(key string) {
 type identity struct {
 	User     User // a copy, safe to read without the store lock
 	ViaToken bool
+	Scopes   []string // what a token may do; nil for people signed in
 	session  string
+}
+
+// Token scopes. A token holds any combination.
+var validScopes = map[string]string{
+	"send": "Send, recall and schedule alerts",
+	"lock": "Lock and unlock screens",
+	"read": "Read computers, groups, sounds and history",
+}
+
+// tokenScopes treats tokens made before scopes existed as they always
+// behaved: able to send and read, but not lock.
+func tokenScopes(t *Token) []string {
+	if t.Scopes == nil {
+		return []string{"send", "read"}
+	}
+	return t.Scopes
+}
+
+func hasScope(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// can reports whether the caller may use a scope at all. People get "send"
+// and "read" by being signed in; "lock" needs an administrator or an account
+// an administrator has allowed to lock screens.
+func (id *identity) can(scope string) bool {
+	if id.ViaToken {
+		return scope == "" || hasScope(id.Scopes, scope)
+	}
+	if scope == "lock" {
+		return id.User.Role == "admin" || id.User.CanLock
+	}
+	return true
 }
 
 // authenticate resolves the caller from a Bearer token or session cookie.
@@ -237,9 +276,10 @@ func (a *App) authenticate(r *http.Request) (*identity, bool) {
 					t.LastUsed = time.Now()
 					a.store.dirtyState = true
 				}
-				return &identity{ViaToken: true, User: User{
+				scopes := tokenScopes(t)
+				return &identity{ViaToken: true, Scopes: append([]string(nil), scopes...), User: User{
 					ID: "token:" + t.ID, Username: "token:" + t.Name,
-					DisplayName: t.Name, Role: "sender",
+					DisplayName: t.Name, Role: "sender", CanLock: hasScope(scopes, "lock"),
 				}}, true
 			}
 		}
@@ -264,9 +304,10 @@ func (a *App) authenticate(r *http.Request) (*identity, bool) {
 
 type authedHandler func(w http.ResponseWriter, r *http.Request, id *identity)
 
-// guard wraps a handler with authentication, role checks, CSRF protection and
-// the "you must change your password first" gate.
-func (a *App) guard(role string, h authedHandler) http.HandlerFunc {
+// guard wraps a handler with authentication, role and scope checks, CSRF
+// protection and the "you must change your password first" gate. scope is
+// what an API token needs to make the call ("" = any valid token).
+func (a *App) guard(role, scope string, h authedHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id, ok := a.authenticate(r)
 		if !ok {
@@ -284,6 +325,14 @@ func (a *App) guard(role string, h authedHandler) http.HandlerFunc {
 		}
 		if role == "admin" && id.User.Role != "admin" {
 			writeErr(w, http.StatusForbidden, "forbidden", "Only administrators can do that.")
+			return
+		}
+		if !id.can(scope) {
+			if id.ViaToken {
+				writeErr(w, http.StatusForbidden, "forbidden", "This API token does not have the \""+scope+"\" scope.")
+			} else {
+				writeErr(w, http.StatusForbidden, "forbidden", "Your account is not allowed to lock screens. Ask an administrator.")
+			}
 			return
 		}
 		if id.User.MustChange && role != "self" {

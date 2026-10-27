@@ -2,10 +2,13 @@ package main
 
 // store.go - data model and persistence.
 //
-// Everything lives in three JSON files inside the data directory:
-//   state.json   users, API tokens, saved groups, templates, settings
+// Everything lives in a few JSON files inside the data directory:
+//   state.json   users, API tokens, saved groups, templates, sounds,
+//                schedules, webhooks, settings
 //   alerts.json  alert history including per-computer delivery records
+//   locks.json   screen locks, current and recent, with per-computer state
 //   clients.json computers that have checked in
+//   sounds/      uploaded sound files, named by their id
 //
 // There is deliberately no database. A college with a few thousand PCs fits
 // comfortably in memory, and "copy one folder" is the whole backup story.
@@ -24,6 +27,7 @@ import (
 const (
 	maxAlertsKept           = 300 // older alerts are dropped from history
 	maxAlertsWithDeliveries = 60  // older alerts keep only their totals
+	maxLocksKept            = 100
 	clientForgetAfter       = 45 * 24 * time.Hour
 )
 
@@ -36,6 +40,7 @@ type User struct {
 	MustChange      bool      `json:"must_change"`
 	Disabled        bool      `json:"disabled"`
 	AllowedGroupIDs []string  `json:"allowed_group_ids"` // empty = may send to anyone
+	CanLock         bool      `json:"can_lock"`          // may lock screens (admins always can)
 	CreatedAt       time.Time `json:"created_at"`
 	LastLogin       time.Time `json:"last_login"`
 }
@@ -43,7 +48,8 @@ type User struct {
 type Token struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
-	Hash      string    `json:"hash"` // sha256 of the token, hex
+	Hash      string    `json:"hash"`             // sha256 of the token, hex
+	Scopes    []string  `json:"scopes,omitempty"` // send | lock | read; nil = made before 1.1, which means send + read
 	CreatedBy string    `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
 	LastUsed  time.Time `json:"last_used"`
@@ -79,6 +85,15 @@ type AlertSpec struct {
 	Link           string `json:"link"`
 	ExpiresMinutes int    `json:"expires_minutes"` // how long late-arriving computers still receive it
 	Target         Target `json:"target"`
+
+	// Appearance, from the builder. All optional: empty means "as the level".
+	Accent       string   `json:"accent"`        // #rrggbb for the band and the full-screen background
+	Label        string   `json:"label"`         // replaces Notice / Warning / Urgent in the band
+	Icon         string   `json:"icon"`          // one of alertIcons
+	DismissLabel string   `json:"dismiss_label"` // replaces "Dismiss" / "I've read this"
+	Responses    []string `json:"responses"`     // reply buttons; picking one closes the alert and is recorded
+	SoundID      string   `json:"sound_id"`      // an uploaded sound; "" = the Windows sound for the level
+	SoundLoop    bool     `json:"sound_loop"`    // keep playing until the alert closes
 }
 
 type Template struct {
@@ -97,6 +112,7 @@ type Delivery struct {
 	AckedAt     *time.Time `json:"acked_at,omitempty"`
 	ClosedAt    *time.Time `json:"closed_at,omitempty"`
 	CloseReason string     `json:"close_reason,omitempty"` // dismissed | acknowledged | timeout | recalled
+	Response    string     `json:"response,omitempty"`     // which reply button was pressed
 	RecallSent  bool       `json:"recall_sent,omitempty"`
 }
 
@@ -104,6 +120,8 @@ type Totals struct {
 	Sent      int `json:"sent"`
 	Displayed int `json:"displayed"`
 	Acked     int `json:"acked"`
+	// How many pressed each reply button, for alerts that ask a question.
+	Responses map[string]int `json:"responses,omitempty"`
 }
 
 type Alert struct {
@@ -148,6 +166,81 @@ func (a *Alert) status(now time.Time) string {
 	}
 }
 
+// LockSpec is what a person fills in to lock screens.
+type LockSpec struct {
+	Mode            string `json:"mode"` // blank (screen covered) | freeze (screen visible, input blocked)
+	Message         string `json:"message"`
+	DurationMinutes int    `json:"duration_minutes"` // unlocks itself after this long, server reachable or not
+	Target          Target `json:"target"`
+}
+
+// LockState is one computer+user's experience of one lock.
+type LockState struct {
+	Hostname   string     `json:"hostname"`
+	User       string     `json:"user"`
+	SID        string     `json:"sid"`
+	SentAt     time.Time  `json:"sent_at"`
+	LockedAt   *time.Time `json:"locked_at,omitempty"`
+	ReleasedAt *time.Time `json:"released_at,omitempty"`
+	UnlockSent bool       `json:"unlock_sent,omitempty"`
+}
+
+type Lock struct {
+	ID            string                `json:"id"`
+	Spec          LockSpec              `json:"spec"`
+	Rules         []Rule                `json:"rules"`
+	TargetSummary string                `json:"target_summary"`
+	Sender        string                `json:"sender"`
+	SenderName    string                `json:"sender_name"`
+	CreatedAt     time.Time             `json:"created_at"`
+	EndsAt        time.Time             `json:"ends_at"`
+	UnlockedAt    *time.Time            `json:"unlocked_at,omitempty"`
+	UnlockedBy    string                `json:"unlocked_by,omitempty"`
+	States        map[string]*LockState `json:"states"`
+}
+
+func (l *Lock) active(now time.Time) bool { return l.UnlockedAt == nil && now.Before(l.EndsAt) }
+
+// Sound is an uploaded audio file, stored as sounds/<id><ext>.
+type Sound struct {
+	ID         string    `json:"id"` // from the content's sha256, so a PC's cached copy can never go stale
+	Name       string    `json:"name"`
+	Ext        string    `json:"ext"` // .wav | .mp3
+	Size       int64     `json:"size"`
+	UploadedBy string    `json:"uploaded_by"`
+	UploadedAt time.Time `json:"uploaded_at"`
+}
+
+// Schedule sends an alert later: once, or on a weekly pattern.
+type Schedule struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Spec      AlertSpec `json:"spec"`
+	Once      string    `json:"once"` // server-local "2026-10-28T15:50"; "" when repeating
+	Days      []int     `json:"days"` // 0=Sunday .. 6=Saturday, when repeating
+	Time      string    `json:"time"` // "15:50", when repeating
+	Enabled   bool      `json:"enabled"`
+	Owner     string    `json:"owner"` // id of the account the alert is sent as
+	CreatedAt time.Time `json:"created_at"`
+	NextRun   time.Time `json:"next_run"`
+	LastRun   time.Time `json:"last_run"`
+	LastAlert string    `json:"last_alert"`
+	LastError string    `json:"last_error"`
+}
+
+// Webhook is somewhere Foghorn tells about things as they happen.
+type Webhook struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	URL       string    `json:"url"`
+	Secret    string    `json:"secret"` // signs each delivery (HMAC-SHA256)
+	Events    []string  `json:"events"` // empty = every event
+	Enabled   bool      `json:"enabled"`
+	CreatedAt time.Time `json:"created_at"`
+	LastAt    time.Time `json:"last_at"`
+	LastError string    `json:"last_error"`
+}
+
 type Settings struct {
 	OrgName   string `json:"org_name"`
 	ClientKey string `json:"client_key"`
@@ -159,6 +252,9 @@ type State struct {
 	Tokens    []*Token    `json:"tokens"`
 	Groups    []*Group    `json:"groups"`
 	Templates []*Template `json:"templates"`
+	Sounds    []*Sound    `json:"sounds"`
+	Schedules []*Schedule `json:"schedules"`
+	Webhooks  []*Webhook  `json:"webhooks"`
 }
 
 type ClientInfo struct {
@@ -186,9 +282,10 @@ type Store struct {
 	dir     string
 	State   State
 	Alerts  []*Alert // oldest first
+	Locks   []*Lock  // oldest first
 	Clients map[string]*ClientInfo
 
-	dirtyState, dirtyAlerts, dirtyClients bool
+	dirtyState, dirtyAlerts, dirtyLocks, dirtyClients bool
 }
 
 func newID() string {
@@ -217,6 +314,14 @@ func openStore(dir string) (*Store, error) {
 	}
 	if err := loadJSON(filepath.Join(dir, "alerts.json"), &s.Alerts); err != nil {
 		return nil, err
+	}
+	if err := loadJSON(filepath.Join(dir, "locks.json"), &s.Locks); err != nil {
+		return nil, err
+	}
+	for _, l := range s.Locks {
+		if l.States == nil {
+			l.States = map[string]*LockState{}
+		}
 	}
 	var clients []*ClientInfo
 	if err := loadJSON(filepath.Join(dir, "clients.json"), &clients); err != nil {
@@ -274,7 +379,7 @@ func writeFileAtomic(path string, data []byte) error {
 // disk I/O happens outside it.
 func (s *Store) flush() error {
 	s.mu.Lock()
-	var stateB, alertsB, clientsB []byte
+	var stateB, alertsB, locksB, clientsB []byte
 	var err error
 	if s.dirtyState {
 		stateB, err = json.MarshalIndent(&s.State, "", "  ")
@@ -284,6 +389,13 @@ func (s *Store) flush() error {
 		s.compactLocked()
 		alertsB, err = json.Marshal(s.Alerts)
 		s.dirtyAlerts = false
+	}
+	if err == nil && s.dirtyLocks {
+		if n := len(s.Locks); n > maxLocksKept {
+			s.Locks = append([]*Lock(nil), s.Locks[n-maxLocksKept:]...)
+		}
+		locksB, err = json.Marshal(s.Locks)
+		s.dirtyLocks = false
 	}
 	if err == nil && s.dirtyClients {
 		list := make([]*ClientInfo, 0, len(s.Clients))
@@ -308,6 +420,11 @@ func (s *Store) flush() error {
 			return err
 		}
 	}
+	if locksB != nil {
+		if err := writeFileAtomic(filepath.Join(s.dir, "locks.json"), locksB); err != nil {
+			return err
+		}
+	}
 	if clientsB != nil {
 		if err := writeFileAtomic(filepath.Join(s.dir, "clients.json"), clientsB); err != nil {
 			return err
@@ -329,6 +446,7 @@ func (s *Store) compactLocked() {
 		}
 		if a.Archived == nil && a.status(now) != "active" {
 			t := a.totals()
+			t.Responses = a.tally()
 			a.Archived = &t
 			a.Deliveries = nil
 		}
@@ -374,6 +492,24 @@ func (s *Store) alertByID(id string) *Alert {
 	for i := len(s.Alerts) - 1; i >= 0; i-- {
 		if s.Alerts[i].ID == id {
 			return s.Alerts[i]
+		}
+	}
+	return nil
+}
+
+func (s *Store) lockByID(id string) *Lock {
+	for i := len(s.Locks) - 1; i >= 0; i-- {
+		if s.Locks[i].ID == id {
+			return s.Locks[i]
+		}
+	}
+	return nil
+}
+
+func (s *Store) soundByID(id string) *Sound {
+	for _, x := range s.State.Sounds {
+		if x.ID == id {
+			return x
 		}
 	}
 	return nil

@@ -27,14 +27,14 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Shows alerts sent from the Foghorn server")]
 [assembly: AssemblyCompany("Archie Paice")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Archie Paice. MIT licence.")]
-[assembly: AssemblyVersion("1.0.3.0")]
-[assembly: AssemblyFileVersion("1.0.3.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace Foghorn
 {
     static class Program
     {
-        public const string Version = "1.0.3";
+        public const string Version = "1.1.0";
 
         /// <summary>
         /// Shown in --help and --status. Whoever is troubleshooting a PC should
@@ -61,13 +61,15 @@ namespace Foghorn
             Config.Overrides = opts;
 
             if (opts.ContainsKey("test")) { Application.Run(new TestContext()); return 0; }
+            if (opts.ContainsKey("test-lock")) { Application.Run(new TestLockContext()); return 0; }
             if (opts.ContainsKey("status")) { StatusCheck.Run(); return 0; }
             if (opts.ContainsKey("help") || opts.ContainsKey("?"))
             {
                 MessageBox.Show(
-                    "FoghornClient.exe            run normally (no window; alerts pop up when sent)\n" +
-                    "FoghornClient.exe --test     show sample alerts without needing a server\n" +
-                    "FoghornClient.exe --status   show the settings in use and test the connection\n" +
+                    "FoghornClient.exe              run normally (no window; alerts pop up when sent)\n" +
+                    "FoghornClient.exe --test       show sample alerts without needing a server\n" +
+                    "FoghornClient.exe --test-lock  lock this screen for 10 seconds, to see what a lock looks like\n" +
+                    "FoghornClient.exe --status     show the settings in use and test the connection\n" +
                     "  --server URL --key KEY     override the configured server for this run\n\n" +
                     Credit,
                     "Foghorn client " + Version, MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -96,6 +98,7 @@ namespace Foghorn
     {
         readonly Control marshal = new Control();
         readonly AlertManager manager;
+        readonly LockManager locks;
         readonly Poller poller;
 
         public ClientContext()
@@ -104,6 +107,19 @@ namespace Foghorn
             GC.KeepAlive(force);
             poller = new Poller();
             manager = new AlertManager(poller.QueueEvent);
+            locks = new LockManager(poller.QueueLockEvent, manager);
+            poller.LocksReceived += delegate(List<LockData> apply, List<string> lift)
+            {
+                try
+                {
+                    marshal.BeginInvoke((MethodInvoker)delegate
+                    {
+                        foreach (string id in lift) locks.Release(id);
+                        foreach (LockData l in apply) locks.Apply(l);
+                    });
+                }
+                catch (Exception ex) { Log.Write("Could not hand locks to the UI: " + ex.Message); }
+            };
             poller.AlertsReceived += delegate(List<AlertData> alerts, List<string> recalled)
             {
                 try
@@ -127,7 +143,7 @@ namespace Foghorn
         {
             int open = 0;
             AlertManager manager = null;
-            manager = new AlertManager(delegate(string id, string ev)
+            manager = new AlertManager(delegate(string id, string ev, string choice)
             {
                 if (ev == "displayed") return;
                 open--;
@@ -136,13 +152,18 @@ namespace Foghorn
                 {
                     var full = Sample("test-3", "Leave the building now", "This is what a full-screen alert looks like. It covers every monitor until it is acknowledged.\n\nThis is only a test.", "critical", "fullscreen");
                     full.RequireAck = true;
+                    full.Icon = "\U0001F6A8";
+                    full.Responses.Add("I’m out safely");
+                    full.Responses.Add("I need help");
                     open++;
                     manager.Show(full);
                 }
             });
             var a = Sample("test-1", "Save your work", "This is a corner alert. It sits on top of everything but does not take the keyboard away from what you were typing.", "info", "corner");
             a.Link = "https://www.example.com/";
-            var b = Sample("test-2", "This computer will restart soon", "This is a centre alert. Close both of these to see the full-screen style.", "warning", "center");
+            a.Icon = "\U0001F4C5";
+            var b = Sample("test-2", "This computer will restart soon", "This is a centre alert with its own colour and label. Close both of these to see the full-screen style.", "warning", "center");
+            b.Accent = "#6a3fb5"; b.Label = "IT team"; b.Icon = "\U0001F527"; b.DismissLabel = "Got it";
             open = 2;
             manager.Show(a);
             manager.Show(b);
@@ -154,6 +175,22 @@ namespace Foghorn
             a.Id = id; a.Title = title; a.Message = msg; a.Level = level; a.Display = display;
             a.Sender = "Foghorn test"; a.Org = "Foghorn"; a.Created = DateTime.Now; a.Sound = true;
             return a;
+        }
+    }
+
+    /// <summary>--test-lock: locks this screen for ten seconds so an admin can see a lock working.</summary>
+    class TestLockContext : ApplicationContext
+    {
+        public TestLockContext()
+        {
+            var manager = new AlertManager(delegate(string id, string ev, string choice) { });
+            LockManager locks = null;
+            locks = new LockManager(delegate(string id, string ev) { if (ev == "released") ExitThread(); }, manager);
+            var l = new LockData();
+            l.Id = "test-lock"; l.Mode = "blank"; l.Sender = "Foghorn test"; l.Org = "Foghorn";
+            l.Message = "This is a test lock. Keyboard and mouse are blocked. It lifts itself in 10 seconds.";
+            l.EndsUtc = DateTime.UtcNow.AddSeconds(10);
+            locks.Apply(l);
         }
     }
 
