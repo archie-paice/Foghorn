@@ -25,11 +25,17 @@ jobs:
         shell: powershell
     env:
       MSI: ${{ github.workspace }}\dist\FoghornClient.msi
-      MST: ${{ runner.temp }}\Test.mst
       SERVER_URL: http://foghorn-test.example:8080
       CLIENT_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef
     steps:
       - uses: actions/checkout@v4
+
+      # runner.temp cannot be used in job-level env: the runner context does
+      # not exist when that is evaluated, and GitHub rejects the whole workflow
+      # before any job starts. Set the path here, once there is a runner.
+      - name: Paths on this runner
+        run: |
+          "MST=$env:RUNNER_TEMP\Test.mst" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
 
       - name: Checksums match
         working-directory: dist

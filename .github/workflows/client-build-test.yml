@@ -32,9 +32,15 @@ jobs:
         shell: powershell
     env:
       LISTEN: 127.0.0.1:18080
-      DATA: ${{ runner.temp }}\foghorn-data
     steps:
       - uses: actions/checkout@v4
+
+      # runner.temp cannot be used in job-level env: the runner context does
+      # not exist when that is evaluated, and GitHub rejects the whole workflow
+      # before any job starts. Set the path here, once there is a runner.
+      - name: Paths on this runner
+        run: |
+          "DATA=$env:RUNNER_TEMP\foghorn-data" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
 
       - name: Which compiler is on this runner
         run: |
@@ -136,7 +142,7 @@ jobs:
           }
           "  ok  the MSI installs the client in dist\"
 
-      - name: Start a real Foghorn server
+      - name: The shipped client connects to a real Foghorn server
         run: |
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force $env:DATA | Out-Null
@@ -158,13 +164,11 @@ jobs:
             throw "the server never produced a client key"
           }
           (Invoke-WebRequest "http://$env:LISTEN/" -UseBasicParsing -TimeoutSec 20).StatusCode | Out-Null
-          $key | Set-Content "$env:RUNNER_TEMP\client.key"
           "server is up on $env:LISTEN"
 
-      - name: The shipped client connects to it
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $key = (Get-Content "$env:RUNNER_TEMP\client.key" -Raw).Trim()
+          # Same step on purpose. On Windows runners each step runs in its own
+          # job object, and a process it starts is killed when the step ends -
+          # a server started in an earlier step is gone before the client tries it.
           $log = Join-Path $env:LOCALAPPDATA 'Foghorn\client.log'
           Remove-Item $log -Force -ErrorAction SilentlyContinue
 
