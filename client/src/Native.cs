@@ -53,5 +53,64 @@ namespace Foghorn
         {
             try { int round = 2; DwmSetWindowAttribute(hwnd, 33, ref round, sizeof(int)); } catch { }
         }
+
+        // ---- input hooks, for screen locks ----
+        //
+        // Low-level hooks see every key press and mouse event in the session
+        // before any window does, and work without administrator rights. They
+        // cannot see Ctrl+Alt+Del: Windows reserves that, which is what keeps
+        // "sign out" always available to the person at the PC.
+
+        public const int WH_KEYBOARD_LL = 13, WH_MOUSE_LL = 14;
+        public const int WM_MOUSEMOVE = 0x0200;
+
+        public delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct POINT { public int X, Y; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct MSLLHOOKSTRUCT { public POINT pt; public uint mouseData, flags, time; public IntPtr extra; }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        static extern IntPtr SetWindowsHookEx(int idHook, HookProc fn, IntPtr hMod, uint threadId);
+
+        [DllImport("user32.dll")]
+        static extern bool UnhookWindowsHookEx(IntPtr hook);
+
+        [DllImport("user32.dll")]
+        public static extern IntPtr CallNextHookEx(IntPtr hook, int nCode, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        static extern IntPtr GetModuleHandle(string name);
+
+        /// <summary>Installs a low-level hook for this process. Returns IntPtr.Zero on failure.</summary>
+        public static IntPtr Hook(int kind, HookProc fn)
+        {
+            try
+            {
+                using (var p = System.Diagnostics.Process.GetCurrentProcess())
+                using (var m = p.MainModule)
+                    return SetWindowsHookEx(kind, fn, GetModuleHandle(m.ModuleName), 0);
+            }
+            catch { return IntPtr.Zero; }
+        }
+
+        public static void Unhook(IntPtr hook)
+        {
+            if (hook == IntPtr.Zero) return;
+            try { UnhookWindowsHookEx(hook); } catch { }
+        }
+
+        // ---- MCI, for playing MP3s (SoundPlayer only does WAV) ----
+
+        [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
+        static extern int mciSendString(string command, System.Text.StringBuilder ret, int retLen, IntPtr callback);
+
+        /// <summary>Sends an MCI command; returns true if it worked.</summary>
+        public static bool Mci(string command)
+        {
+            try { return mciSendString(command, null, 0, IntPtr.Zero) == 0; } catch { return false; }
+        }
     }
 }

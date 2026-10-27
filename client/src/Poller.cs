@@ -17,6 +17,25 @@ namespace Foghorn
         public bool RequireAck, Sound;
         public int DisplaySeconds;
         public DateTime Created = DateTime.Now;
+
+        // From the alert builder. Empty means "as the level".
+        public string Accent = "", Label = "", Icon = "", DismissLabel = "", SoundId = "", SoundExt = "";
+        public bool SoundLoop;
+        public List<string> Responses = new List<string>();
+    }
+
+    /// <summary>One screen lock as the server describes it.</summary>
+    class LockData
+    {
+        public string Id = "", Mode = "blank", Message = "", Sender = "", Org = "";
+        /// <summary>When it lets go by itself, worked out from seconds_left so a wrong PC clock does not matter.</summary>
+        public DateTime EndsUtc;
+    }
+
+    /// <summary>Something that happened on this PC, waiting to be told to the server.</summary>
+    class OutEvent
+    {
+        public string AlertId = "", LockId = "", Event = "", Choice = "";
     }
 
     /// <summary>
@@ -32,9 +51,11 @@ namespace Foghorn
     {
         public delegate void AlertsHandler(List<AlertData> alerts, List<string> recalled);
         public event AlertsHandler AlertsReceived;
+        public delegate void LocksHandler(List<LockData> locks, List<string> unlocks);
+        public event LocksHandler LocksReceived;
 
         readonly object gate = new object();
-        readonly List<KeyValuePair<string, string>> pending = new List<KeyValuePair<string, string>>();
+        readonly List<OutEvent> pending = new List<OutEvent>();
         readonly Random random = new Random();
         HttpWebRequest current;
         bool abortedByUs;
@@ -61,12 +82,27 @@ namespace Foghorn
             t.Start();
         }
 
-        /// <summary>Called from the UI thread when something happens to an alert.</summary>
-        public void QueueEvent(string alertId, string what)
+        /// <summary>Called from the UI thread when something happens to an alert. choice is the reply button pressed, if any.</summary>
+        public void QueueEvent(string alertId, string what, string choice)
+        {
+            var e = new OutEvent();
+            e.AlertId = alertId; e.Event = what; e.Choice = choice ?? "";
+            Queue(e);
+        }
+
+        /// <summary>Called from the UI thread when a lock is applied or let go.</summary>
+        public void QueueLockEvent(string lockId, string what)
+        {
+            var e = new OutEvent();
+            e.LockId = lockId; e.Event = what;
+            Queue(e);
+        }
+
+        void Queue(OutEvent e)
         {
             lock (gate)
             {
-                pending.Add(new KeyValuePair<string, string>(alertId, what));
+                pending.Add(e);
                 if (current != null)
                 {
                     abortedByUs = true;
@@ -90,8 +126,8 @@ namespace Foghorn
                     continue;
                 }
 
-                List<KeyValuePair<string, string>> sending;
-                lock (gate) { sending = new List<KeyValuePair<string, string>>(pending); pending.Clear(); abortedByUs = false; }
+                List<OutEvent> sending;
+                lock (gate) { sending = new List<OutEvent>(pending); pending.Clear(); abortedByUs = false; }
 
                 int waitMs;
                 try
@@ -142,7 +178,7 @@ namespace Foghorn
             Log.Write(state);
         }
 
-        Dictionary<string, object> Send(Config cfg, List<KeyValuePair<string, string>> events, bool wait, int timeoutMs, bool track)
+        Dictionary<string, object> Send(Config cfg, List<OutEvent> events, bool wait, int timeoutMs, bool track)
         {
             var client = new Dictionary<string, object>();
             client["hostname"] = Identity.Hostname;
@@ -155,10 +191,12 @@ namespace Foghorn
             client["sid"] = Identity.SessionId;
 
             var evs = new List<object>();
-            foreach (var e in events)
+            foreach (OutEvent e in events)
             {
                 var d = new Dictionary<string, object>();
-                d["alert_id"] = e.Key; d["event"] = e.Value;
+                if (e.LockId != "") d["lock_id"] = e.LockId; else d["alert_id"] = e.AlertId;
+                d["event"] = e.Event;
+                if (e.Choice != "") d["choice"] = e.Choice;
                 evs.Add(d);
             }
             var body = new Dictionary<string, object>();
@@ -226,6 +264,11 @@ namespace Foghorn
                 a.RequireAck = Get(d, "require_ack") is bool && (bool)Get(d, "require_ack");
                 a.Sound = Get(d, "sound") is bool && (bool)Get(d, "sound");
                 a.DisplaySeconds = ToInt(Get(d, "display_seconds"), 0);
+                a.Accent = Str(d, "accent"); a.Label = Str(d, "label"); a.Icon = Str(d, "icon");
+                a.DismissLabel = Str(d, "dismiss_label");
+                a.SoundId = Str(d, "sound_id"); a.SoundExt = Str(d, "sound_ext");
+                a.SoundLoop = Get(d, "sound_loop") is bool && (bool)Get(d, "sound_loop");
+                foreach (object r in AsList(Get(d, "responses"))) if (r != null && r.ToString() != "") a.Responses.Add(r.ToString());
                 DateTime when;
                 if (DateTime.TryParse(Str(d, "created_at"), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out when))
                     a.Created = when.ToLocalTime();
@@ -234,10 +277,85 @@ namespace Foghorn
             var recalled = new List<string>();
             foreach (object o in AsList(Get(reply, "recalled"))) if (o != null) recalled.Add(o.ToString());
 
-            if (alerts.Count == 0 && recalled.Count == 0) return;
-            Log.Write("Received " + alerts.Count + " alert(s), " + recalled.Count + " recall(s)");
-            AlertsHandler handler = AlertsReceived;
-            if (handler != null) handler(alerts, recalled);
+            var locks = new List<LockData>();
+            foreach (object o in AsList(Get(reply, "locks")))
+            {
+                var d = o as Dictionary<string, object>;
+                if (d == null) continue;
+                var l = new LockData();
+                l.Id = Str(d, "id"); l.Mode = Str(d, "mode"); l.Message = Str(d, "message");
+                l.Sender = Str(d, "sender"); l.Org = Str(d, "org");
+                // A lock with no sensible end gets a short one rather than none.
+                int left = ToInt(Get(d, "seconds_left"), 0);
+                if (left <= 0 || left > 8 * 3600) left = 60;
+                l.EndsUtc = DateTime.UtcNow.AddSeconds(left);
+                if (l.Id != "") locks.Add(l);
+            }
+            var unlocks = new List<string>();
+            foreach (object o in AsList(Get(reply, "unlocks"))) if (o != null) unlocks.Add(o.ToString());
+
+            if (alerts.Count > 0 || recalled.Count > 0)
+            {
+                Log.Write("Received " + alerts.Count + " alert(s), " + recalled.Count + " recall(s)");
+                AlertsHandler handler = AlertsReceived;
+                if (handler != null) handler(alerts, recalled);
+            }
+            if (locks.Count > 0 || unlocks.Count > 0)
+            {
+                Log.Write("Received " + locks.Count + " lock(s), " + unlocks.Count + " unlock(s)");
+                LocksHandler lh = LocksReceived;
+                if (lh != null) lh(locks, unlocks);
+            }
+        }
+
+        /// <summary>
+        /// Fetches an uploaded sound into the local cache, or returns the cached
+        /// copy. Sound ids are content hashes, so a cached file never goes stale.
+        /// Returns "" if it cannot be had; the caller falls back to a Windows sound.
+        /// </summary>
+        public static string FetchSound(string id, string ext)
+        {
+            if (id == "" || (ext != ".wav" && ext != ".mp3")) return "";
+            foreach (char ch in id) if (!Uri.IsHexDigit(ch)) return ""; // it becomes a file name
+            try
+            {
+                string dir = Path.Combine(Path.GetDirectoryName(Log.FilePath), "sounds");
+                Directory.CreateDirectory(dir);
+                string path = Path.Combine(dir, id + ext);
+                if (File.Exists(path)) return path;
+
+                Config cfg = Config.Load();
+                if (!cfg.IsValid) return "";
+                var req = (HttpWebRequest)WebRequest.Create(cfg.ServerUrl.TrimEnd(new[] { '/' }) + "/api/client/sounds/" + id);
+                req.Headers["X-Foghorn-Key"] = cfg.ClientKey;
+                req.UserAgent = "FoghornClient/" + Program.Version;
+                req.Timeout = 20000; req.ReadWriteTimeout = 20000;
+                req.AllowAutoRedirect = false;
+                if (!cfg.UseSystemProxy) req.Proxy = null;
+                string tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                using (var resp = (HttpWebResponse)req.GetResponse())
+                using (Stream src = resp.GetResponseStream())
+                using (var dst = File.Create(tmp))
+                {
+                    var buf = new byte[65536];
+                    long total = 0;
+                    int n;
+                    while ((n = src.Read(buf, 0, buf.Length)) > 0)
+                    {
+                        total += n;
+                        if (total > 6 * 1024 * 1024) throw new InvalidDataException("sound is larger than the server allows");
+                        dst.Write(buf, 0, n);
+                    }
+                }
+                try { File.Move(tmp, path); }
+                catch { if (File.Exists(tmp)) File.Delete(tmp); } // another session got there first
+                return File.Exists(path) ? path : "";
+            }
+            catch (Exception ex)
+            {
+                Log.Write("Could not fetch sound " + id + ": " + ex.Message);
+                return "";
+            }
         }
 
         /// <summary>Used by --status. Returns null when all is well, otherwise a sentence explaining what is wrong.</summary>
@@ -245,7 +363,7 @@ namespace Foghorn
         {
             try
             {
-                new Poller().Send(cfg, new List<KeyValuePair<string, string>>(), false, 10000, false);
+                new Poller().Send(cfg, new List<OutEvent>(), false, 10000, false);
                 return null;
             }
             catch (WebException ex)

@@ -1,0 +1,338 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Foghorn API",
+    "version": "1.1.0",
+    "description": "Send pop-up alerts to Windows desktops, lock screens, and react to replies. Authenticate with an API token from Settings > API tokens, sent as `Authorization: Bearer fh_...`. Each token has scopes: `send`, `lock`, `read`. Errors are JSON: `{\"error\": \"code\", \"message\": \"sentence for a person\"}`. Full guide: docs/API.md; Laravel: docs/INTEGRATIONS-LARAVEL.md.",
+    "contact": { "name": "Archie Paice", "email": "hello@archiepaice.com" },
+    "license": { "name": "MIT" }
+  },
+  "servers": [{ "url": "/", "description": "This Foghorn server" }],
+  "security": [{ "token": [] }],
+  "tags": [
+    { "name": "Alerts" }, { "name": "Locks" }, { "name": "Schedules" }, { "name": "Sounds" },
+    { "name": "Directory", "description": "Computers, groups and templates" }, { "name": "Meta" }
+  ],
+  "paths": {
+    "/api/alerts": {
+      "get": {
+        "tags": ["Alerts"], "summary": "Recent alerts, newest first", "description": "Scope: read",
+        "parameters": [{ "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 300, "default": 100 } }],
+        "responses": { "200": { "description": "Alerts", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Alert" } } } } }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" } }
+      },
+      "post": {
+        "tags": ["Alerts"], "summary": "Send an alert", "description": "Scope: send. Send an `Idempotency-Key` header to make retries safe: the same key from the same token within 24 hours returns the alert already sent (HTTP 200, `replayed: true`) instead of sending it again.",
+        "parameters": [{ "name": "Idempotency-Key", "in": "header", "schema": { "type": "string", "maxLength": 200 }, "example": "order-4211-reminder" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AlertSpec" },
+          "examples": {
+            "simple": { "value": { "title": "Server maintenance at 17:00", "message": "Save your work.", "level": "warning", "target": { "all": true } } },
+            "question": { "value": { "title": "Fire drill: are you out?", "level": "critical", "display": "fullscreen", "responses": ["I'm out safely", "I need help"], "icon": "alarm", "sound_loop": true, "sound": true, "target": { "group_ids": ["4be19c02d7a35f60"] } } }
+          } } } },
+        "responses": {
+          "201": { "description": "Sent", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SendResult" } } } },
+          "200": { "description": "Already sent with this Idempotency-Key", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SendResult" } } } },
+          "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/alerts/{id}": {
+      "get": {
+        "tags": ["Alerts"], "summary": "One alert with per-computer delivery", "description": "Scope: read",
+        "parameters": [{ "$ref": "#/components/parameters/id" }],
+        "responses": { "200": { "description": "Alert", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Alert" } } } }, "404": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/api/alerts/{id}/recall": {
+      "post": {
+        "tags": ["Alerts"], "summary": "Take an alert off every screen", "description": "Scope: send. A token may recall only alerts it sent.",
+        "parameters": [{ "$ref": "#/components/parameters/id" }],
+        "responses": { "200": { "description": "Recalled", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Alert" } } } }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/api/reach": {
+      "post": {
+        "tags": ["Alerts"], "summary": "How many computers a target matches (sends nothing)", "description": "Scope: read",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Target" } } } },
+        "responses": { "200": { "description": "Reach", "content": { "application/json": { "schema": { "type": "object", "properties": { "online": { "type": "integer" }, "known": { "type": "integer" }, "sample": { "type": "array", "items": { "type": "string" } } } } } } } }
+      }
+    },
+    "/api/locks": {
+      "get": {
+        "tags": ["Locks"], "summary": "Recent screen locks, newest first", "description": "Scope: read",
+        "parameters": [
+          { "name": "active", "in": "query", "description": "Only locks still in force", "schema": { "type": "boolean" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 50, "maximum": 100 } }
+        ],
+        "responses": { "200": { "description": "Locks", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Lock" } } } } } }
+      },
+      "post": {
+        "tags": ["Locks"], "summary": "Lock screens", "description": "Scope: lock. `blank` covers every monitor with a message; `freeze` leaves the screen visible but blocks keyboard and mouse. Every lock ends by itself after `duration_minutes`, even if the PC cannot reach the server.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LockSpec" }, "example": { "mode": "blank", "message": "Eyes to the front, please.", "duration_minutes": 15, "target": { "rules": [{ "field": "hostname", "pattern": "LAB1-*" }] } } } } },
+        "responses": { "201": { "description": "Locked", "content": { "application/json": { "schema": { "type": "object", "properties": { "lock": { "$ref": "#/components/schemas/Lock" }, "online_reach": { "type": "integer" } } } } } }, "403": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/api/locks/{id}": {
+      "get": {
+        "tags": ["Locks"], "summary": "One lock with per-computer state", "description": "Scope: read",
+        "parameters": [{ "$ref": "#/components/parameters/id" }],
+        "responses": { "200": { "description": "Lock", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Lock" } } } }, "404": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/api/locks/{id}/unlock": {
+      "post": {
+        "tags": ["Locks"], "summary": "Unlock", "description": "Scope: lock. A token may unlock only locks it made.",
+        "parameters": [{ "$ref": "#/components/parameters/id" }],
+        "responses": { "200": { "description": "Unlocked", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Lock" } } } } }
+      }
+    },
+    "/api/locks/unlock-all": {
+      "post": {
+        "tags": ["Locks"], "summary": "Unlock everything the caller may unlock", "description": "Scope: lock",
+        "responses": { "200": { "description": "Count", "content": { "application/json": { "schema": { "type": "object", "properties": { "unlocked": { "type": "integer" } } } } } } }
+      }
+    },
+    "/api/schedules": {
+      "get": {
+        "tags": ["Schedules"], "summary": "Scheduled alerts", "description": "Scope: read",
+        "responses": { "200": { "description": "Schedules", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Schedule" } } } } } }
+      },
+      "post": {
+        "tags": ["Schedules"], "summary": "Schedule an alert", "description": "Scope: send. Either `once` (a single server-local date-time) or `days` + `time` (every week).",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ScheduleRequest" }, "example": { "name": "Home time", "days": [1, 2, 3, 4, 5], "time": "15:50", "spec": { "title": "Save your work", "message": "Computers shut down at 16:00.", "target": { "all": true } } } } } },
+        "responses": { "200": { "description": "Saved", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Schedule" } } } }, "400": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/api/schedules/{id}": {
+      "put": {
+        "tags": ["Schedules"], "summary": "Change a schedule", "description": "Scope: send",
+        "parameters": [{ "$ref": "#/components/parameters/id" }],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ScheduleRequest" } } } },
+        "responses": { "200": { "description": "Saved", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Schedule" } } } } }
+      },
+      "delete": {
+        "tags": ["Schedules"], "summary": "Delete a schedule", "description": "Scope: send",
+        "parameters": [{ "$ref": "#/components/parameters/id" }],
+        "responses": { "200": { "description": "Deleted" } }
+      }
+    },
+    "/api/schedules/{id}/run": {
+      "post": {
+        "tags": ["Schedules"], "summary": "Send a scheduled alert now", "description": "Scope: send. Does not change when it next runs.",
+        "parameters": [{ "$ref": "#/components/parameters/id" }],
+        "responses": { "201": { "description": "Sent", "content": { "application/json": { "schema": { "type": "object", "properties": { "alert": { "$ref": "#/components/schemas/Alert" } } } } } } }
+      }
+    },
+    "/api/sounds": {
+      "get": {
+        "tags": ["Sounds"], "summary": "Uploaded sounds", "description": "Scope: read. Use a sound's `id` as an alert's `sound_id`.",
+        "responses": { "200": { "description": "Sounds", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Sound" } } } } } }
+      },
+      "post": {
+        "tags": ["Sounds"], "summary": "Upload a sound (administrators, signed in)", "description": "The raw WAV or MP3 file is the request body; up to 5 MB.",
+        "security": [{ "session": [] }],
+        "parameters": [{ "name": "name", "in": "query", "required": true, "schema": { "type": "string", "maxLength": 60 } }],
+        "requestBody": { "required": true, "content": { "audio/wav": { "schema": { "type": "string", "format": "binary" } }, "audio/mpeg": { "schema": { "type": "string", "format": "binary" } } } },
+        "responses": { "201": { "description": "Uploaded", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Sound" } } } } }
+      }
+    },
+    "/api/sounds/{id}/file": {
+      "get": {
+        "tags": ["Sounds"], "summary": "The audio itself", "description": "Scope: read",
+        "parameters": [{ "$ref": "#/components/parameters/id" }],
+        "responses": { "200": { "description": "Audio", "content": { "audio/wav": {}, "audio/mpeg": {} } } }
+      }
+    },
+    "/api/clients": {
+      "get": {
+        "tags": ["Directory"], "summary": "Every computer that has checked in", "description": "Scope: read",
+        "responses": { "200": { "description": "Computers", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Computer" } } } } } }
+      }
+    },
+    "/api/groups": {
+      "get": {
+        "tags": ["Directory"], "summary": "Saved groups (usually rooms) with their ids", "description": "Scope: read",
+        "responses": { "200": { "description": "Groups", "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Group" } } } } } }
+      }
+    },
+    "/api/templates": {
+      "get": {
+        "tags": ["Directory"], "summary": "Saved alert designs", "description": "Scope: read",
+        "responses": { "200": { "description": "Templates" } }
+      }
+    },
+    "/api/meta": {
+      "get": {
+        "tags": ["Meta"], "summary": "Icons, scopes, webhook events and limits this server accepts", "description": "Any valid token.",
+        "responses": { "200": { "description": "Meta" } }
+      }
+    },
+    "/api/me": {
+      "get": {
+        "tags": ["Meta"], "summary": "Who the token is and what it may do", "description": "Any valid token. A cheap way to check a token works.",
+        "responses": { "200": { "description": "Identity" } }
+      }
+    },
+    "/healthz": {
+      "get": { "tags": ["Meta"], "summary": "Liveness check", "security": [], "responses": { "200": { "description": "`{\"status\":\"ok\",\"version\":\"1.1.0\"}`" } } }
+    }
+  },
+  "webhooks": {
+    "event": {
+      "post": {
+        "summary": "Something happened",
+        "description": "Sent to each webhook configured under Settings > Webhooks. Verify `X-Foghorn-Signature` = `sha256=` + hex(HMAC-SHA256(secret, X-Foghorn-Timestamp + \".\" + raw body)). Answer with any 2xx within 10 seconds; failures are retried after 5 s, 30 s and 2 min. Use `id` to ignore duplicates.",
+        "parameters": [
+          { "name": "X-Foghorn-Event", "in": "header", "schema": { "type": "string" } },
+          { "name": "X-Foghorn-Delivery", "in": "header", "schema": { "type": "string" } },
+          { "name": "X-Foghorn-Timestamp", "in": "header", "schema": { "type": "string" } },
+          { "name": "X-Foghorn-Signature", "in": "header", "schema": { "type": "string" } }
+        ],
+        "requestBody": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebhookPayload" } } } },
+        "responses": { "200": { "description": "Received" } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "token": { "type": "http", "scheme": "bearer", "description": "An API token (fh_...) from Settings > API tokens." },
+      "session": { "type": "apiKey", "in": "cookie", "name": "foghorn_session", "description": "A signed-in administrator in the web console." }
+    },
+    "parameters": {
+      "id": { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+    },
+    "responses": {
+      "Error": { "description": "Error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    },
+    "schemas": {
+      "Error": { "type": "object", "properties": { "error": { "type": "string", "examples": ["invalid", "not_signed_in", "forbidden", "not_found"] }, "message": { "type": "string" } } },
+      "Rule": {
+        "type": "object", "required": ["field", "pattern"],
+        "properties": {
+          "field": { "type": "string", "enum": ["hostname", "user", "ou", "group", "ip"] },
+          "pattern": { "type": "string", "description": "Wildcards * and ?; for ip also CIDR such as 10.20.30.0/24" }
+        }
+      },
+      "Target": {
+        "type": "object", "description": "Exactly one of: all, group_ids, rules. Rules are OR'd.",
+        "properties": {
+          "all": { "type": "boolean" },
+          "group_ids": { "type": "array", "items": { "type": "string" } },
+          "rules": { "type": "array", "items": { "$ref": "#/components/schemas/Rule" } }
+        }
+      },
+      "AlertSpec": {
+        "type": "object", "required": ["title", "target"],
+        "properties": {
+          "title": { "type": "string", "maxLength": 120 },
+          "message": { "type": "string", "maxLength": 2000 },
+          "level": { "type": "string", "enum": ["info", "warning", "critical"], "default": "info" },
+          "display": { "type": "string", "enum": ["corner", "center", "fullscreen"], "default": "corner" },
+          "require_ack": { "type": "boolean", "default": false },
+          "display_seconds": { "type": "integer", "minimum": 0, "maximum": 86400, "default": 0 },
+          "sound": { "type": "boolean", "default": false },
+          "sound_id": { "type": "string", "description": "An uploaded sound; implies sound=true" },
+          "sound_loop": { "type": "boolean", "description": "Keep playing until the alert closes" },
+          "link": { "type": "string", "format": "uri", "maxLength": 500 },
+          "expires_minutes": { "type": "integer", "minimum": 1, "maximum": 10080, "default": 10 },
+          "accent": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$", "description": "Band / full-screen colour; empty = the level's colour" },
+          "label": { "type": "string", "maxLength": 24, "description": "Replaces Notice / Warning / Urgent" },
+          "icon": { "type": "string", "enum": ["", "info", "warning", "alarm", "fire", "lock", "bell", "calendar", "wrench", "megaphone", "clock", "check", "heart", "star", "weather", "wifi", "eyes"] },
+          "dismiss_label": { "type": "string", "maxLength": 30 },
+          "responses": { "type": "array", "maxItems": 4, "items": { "type": "string", "maxLength": 30 }, "description": "Reply buttons. Forces require_ack; the choice is recorded and sent to webhooks as alert.responded." },
+          "target": { "$ref": "#/components/schemas/Target" }
+        }
+      },
+      "Totals": {
+        "type": "object",
+        "properties": {
+          "sent": { "type": "integer" }, "displayed": { "type": "integer" }, "acked": { "type": "integer" },
+          "responses": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "Reply button -> count" }
+        }
+      },
+      "Delivery": {
+        "type": "object",
+        "properties": {
+          "hostname": { "type": "string" }, "user": { "type": "string" },
+          "sent_at": { "type": "string", "format": "date-time" }, "displayed_at": { "type": "string", "format": "date-time" },
+          "acked_at": { "type": "string", "format": "date-time" }, "closed_at": { "type": "string", "format": "date-time" },
+          "close_reason": { "type": "string", "enum": ["dismissed", "acknowledged", "timeout", "recalled"] },
+          "response": { "type": "string" }
+        }
+      },
+      "Alert": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" }, "spec": { "$ref": "#/components/schemas/AlertSpec" },
+          "target_summary": { "type": "string" }, "sender": { "type": "string" }, "sender_name": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" }, "expires_at": { "type": "string", "format": "date-time" },
+          "recalled_at": { "type": "string", "format": "date-time" }, "recalled_by": { "type": "string" },
+          "status": { "type": "string", "enum": ["active", "finished", "recalled"] },
+          "totals": { "$ref": "#/components/schemas/Totals" }, "archived": { "type": "boolean" },
+          "deliveries": { "type": "array", "items": { "$ref": "#/components/schemas/Delivery" } }
+        }
+      },
+      "SendResult": {
+        "type": "object",
+        "properties": { "alert": { "$ref": "#/components/schemas/Alert" }, "online_reach": { "type": "integer" }, "replayed": { "type": "boolean" } }
+      },
+      "LockSpec": {
+        "type": "object", "required": ["target"],
+        "properties": {
+          "mode": { "type": "string", "enum": ["blank", "freeze"], "default": "blank" },
+          "message": { "type": "string", "maxLength": 500 },
+          "duration_minutes": { "type": "integer", "minimum": 1, "maximum": 480, "default": 60 },
+          "target": { "$ref": "#/components/schemas/Target" }
+        }
+      },
+      "Lock": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" }, "spec": { "$ref": "#/components/schemas/LockSpec" }, "target_summary": { "type": "string" },
+          "sender": { "type": "string" }, "sender_name": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" }, "ends_at": { "type": "string", "format": "date-time" },
+          "unlocked_at": { "type": "string", "format": "date-time" }, "unlocked_by": { "type": "string" },
+          "active": { "type": "boolean" }, "sent": { "type": "integer" }, "locked": { "type": "integer", "description": "Computers showing the lock now" },
+          "computers": { "type": "array", "items": { "type": "object" } }
+        }
+      },
+      "ScheduleRequest": {
+        "type": "object", "required": ["spec"],
+        "properties": {
+          "name": { "type": "string", "maxLength": 60 },
+          "spec": { "$ref": "#/components/schemas/AlertSpec" },
+          "once": { "type": "string", "examples": ["2026-10-28T15:50"], "description": "Server-local time" },
+          "days": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 6 }, "description": "0 = Sunday" },
+          "time": { "type": "string", "examples": ["15:50"] },
+          "enabled": { "type": "boolean" }
+        }
+      },
+      "Schedule": {
+        "allOf": [{ "$ref": "#/components/schemas/ScheduleRequest" }, { "type": "object", "properties": {
+          "id": { "type": "string" }, "next_run": { "type": "string", "format": "date-time" }, "last_run": { "type": "string", "format": "date-time" },
+          "last_alert": { "type": "string" }, "last_error": { "type": "string" } } }]
+      },
+      "Sound": {
+        "type": "object",
+        "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "ext": { "type": "string", "enum": [".wav", ".mp3"] }, "size": { "type": "integer" }, "uploaded_by": { "type": "string" }, "uploaded_at": { "type": "string", "format": "date-time" } }
+      },
+      "Computer": {
+        "type": "object",
+        "properties": { "id": { "type": "string" }, "hostname": { "type": "string" }, "user": { "type": "string" }, "domain": { "type": "string" }, "ou": { "type": "string" }, "groups": { "type": "array", "items": { "type": "string" } }, "ip": { "type": "string" }, "version": { "type": "string" }, "os": { "type": "string" }, "last_seen": { "type": "string", "format": "date-time" }, "online": { "type": "boolean" } }
+      },
+      "Group": {
+        "type": "object",
+        "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "rules": { "type": "array", "items": { "$ref": "#/components/schemas/Rule" } }, "online": { "type": "integer" }, "known": { "type": "integer" } }
+      },
+      "WebhookPayload": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "Unique per event; the same on retries" },
+          "event": { "type": "string", "enum": ["alert.sent", "alert.acknowledged", "alert.responded", "alert.recalled", "lock.started", "lock.unlocked", "ping"] },
+          "created_at": { "type": "string", "format": "date-time" },
+          "org": { "type": "string" },
+          "data": { "type": "object", "description": "alert.sent/recalled: {alert}; alert.acknowledged/responded: {alert_id, title, hostname, user, domain, response, at}; lock.*: {lock}" }
+        }
+      }
+    }
+  }
+}

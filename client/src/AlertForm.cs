@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
-using System.Media;
 using System.Windows.Forms;
 
 namespace Foghorn
@@ -33,6 +32,39 @@ namespace Foghorn
             if (level == "critical") return "Urgent";
             if (level == "warning") return "Warning";
             return "Notice";
+        }
+
+        /// <summary>"#1d6fb8" to a colour, or Empty if it is not one.</summary>
+        public static Color Parse(string hex)
+        {
+            int v;
+            if (hex == null || hex.Length != 7 || hex[0] != '#' ||
+                !int.TryParse(hex.Substring(1), System.Globalization.NumberStyles.HexNumber, null, out v)) return Color.Empty;
+            return Color.FromArgb((v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff);
+        }
+
+        public static Color Band(AlertData d)
+        {
+            Color c = Parse(d.Accent);
+            return c.IsEmpty ? Band(d.Level) : c;
+        }
+
+        /// <summary>The full-screen background: the accent, darkened until white text reads well on it.</summary>
+        public static Color Curtain(AlertData d)
+        {
+            Color c = Parse(d.Accent);
+            if (c.IsEmpty) return Curtain(d.Level);
+            double k = 0.55;
+            return Color.FromArgb((int)(c.R * k), (int)(c.G * k), (int)(c.B * k));
+        }
+
+        public static string Word(AlertData d) { return d.Label != "" ? d.Label : Word(d.Level); }
+
+        /// <summary>The builder's icons are emoji; this font has every one of them on Windows 10 and 11.</summary>
+        public static Font IconFont(float points)
+        {
+            try { return new Font("Segoe UI Emoji", points, FontStyle.Regular, GraphicsUnit.Point); }
+            catch { return Font(points, FontStyle.Regular); }
         }
 
         public static Font Font(float points, FontStyle style)
@@ -118,6 +150,9 @@ namespace Foghorn
         public readonly AlertData Data;
         /// <summary>Raised once, with: acknowledged | dismissed | timeout | recalled.</summary>
         public event Action<AlertWindow, string> Finished;
+        /// <summary>The reply button pressed, for alerts that ask a question.</summary>
+        public string Choice = "";
+        AlertSound sound;
 
         protected readonly bool TakesFocus;
         readonly Timer topmostTimer = new Timer();
@@ -181,23 +216,12 @@ namespace Foghorn
             if (TakesFocus) { Native.BringToFront(Handle); Activate(); }
             topmostTimer.Start();
             if (Data.DisplaySeconds > 0 && !Data.RequireAck) lifeTimer.Start();
-            if (Data.Sound) PlaySound();
+            if (Data.Sound) { sound = new AlertSound(Data, this); sound.Start(); }
         }
 
         protected void StartFade()
         {
             try { Opacity = 0; fadeTimer.Start(); } catch { }
-        }
-
-        void PlaySound()
-        {
-            try
-            {
-                if (Data.Level == "critical") SystemSounds.Hand.Play();
-                else if (Data.Level == "warning") SystemSounds.Exclamation.Play();
-                else SystemSounds.Asterisk.Play();
-            }
-            catch { }
         }
 
         void TickLife()
@@ -214,6 +238,7 @@ namespace Foghorn
             if (finishing) return;
             finishing = true;
             topmostTimer.Stop(); lifeTimer.Stop(); fadeTimer.Stop();
+            if (sound != null) sound.Stop();
             Action<AlertWindow, string> handler = Finished;
             try { Close(); } catch { }
             if (handler != null) handler(this, reason);
@@ -233,7 +258,7 @@ namespace Foghorn
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing) { topmostTimer.Dispose(); lifeTimer.Dispose(); fadeTimer.Dispose(); }
+            if (disposing) { topmostTimer.Dispose(); lifeTimer.Dispose(); fadeTimer.Dispose(); if (sound != null) sound.Dispose(); }
             base.Dispose(disposing);
         }
 
@@ -242,7 +267,37 @@ namespace Foghorn
             get { return (Data.Sender == "" ? "Sent" : "From " + Data.Sender) + " at " + Data.Created.ToString("HH:mm"); }
         }
 
-        protected string CloseLabel { get { return Data.RequireAck ? "I\u2019ve read this" : "Dismiss"; } }
+        protected string CloseLabel
+        {
+            get
+            {
+                if (Data.DismissLabel != "") return Data.DismissLabel;
+                return Data.RequireAck ? "I\u2019ve read this" : "Dismiss";
+            }
+        }
+
+        protected bool AsksQuestion { get { return Data.Responses.Count > 0; } }
+
+        /// <summary>The buttons that close the alert: one per reply, or the single close button.</summary>
+        protected List<Button> CloseButtons(bool onDark, float points)
+        {
+            var list = new List<Button>();
+            if (!AsksQuestion)
+            {
+                Button b = Look.MakeButton(CloseLabel, true, onDark, points);
+                b.Click += delegate { CloseByButton(); };
+                list.Add(b);
+                return list;
+            }
+            for (int i = 0; i < Data.Responses.Count; i++)
+            {
+                string choice = Data.Responses[i];
+                Button b = Look.MakeButton(choice, i == 0, onDark, points);
+                b.Click += delegate { Choice = choice; Finish("acknowledged"); };
+                list.Add(b);
+            }
+            return list;
+        }
 
         protected bool HasLink
         {
@@ -275,26 +330,41 @@ namespace Foghorn
             ForeColor = Look.Ink;
 
             var band = new Panel();
-            band.BackColor = Look.Band(data.Level);
+            band.BackColor = Look.Band(data);
             band.SetBounds(0, 0, width, Look.Px(big ? 34 : 28));
             var org = new Label();
             org.Text = data.Org == "" ? "Foghorn" : data.Org;
             org.Font = Look.Font(big ? 9.5f : 8.5f, FontStyle.Bold);
             org.ForeColor = Color.White; org.AutoEllipsis = true; org.UseMnemonic = false;
             org.TextAlign = ContentAlignment.MiddleLeft;
-            org.SetBounds(pad, 0, inner - Look.Px(90), band.Height);
+            org.SetBounds(pad, 0, inner - Look.Px(140), band.Height);
             var word = new Label();
-            word.Text = Look.Word(data.Level);
+            word.Text = Look.Word(data);
             word.Font = org.Font; word.ForeColor = Color.White;
             word.TextAlign = ContentAlignment.MiddleRight;
-            word.SetBounds(width - pad - Look.Px(90), 0, Look.Px(90), band.Height);
+            word.AutoEllipsis = true; word.UseMnemonic = false;
+            word.SetBounds(width - pad - Look.Px(140), 0, Look.Px(140), band.Height);
             band.Controls.Add(org); band.Controls.Add(word);
             Controls.Add(band);
 
             int y = band.Bottom + Look.Px(big ? 16 : 12);
 
-            Label title = Look.Text(data.Title, Look.Font(big ? 16f : 12.5f, FontStyle.Bold), inner, ContentAlignment.TopLeft);
-            title.Location = new Point(pad, y);
+            int textLeft = pad, textWidth = inner;
+            if (data.Icon != "")
+            {
+                int box = Look.Px(big ? 44 : 34);
+                var icon = new Label();
+                icon.Text = data.Icon; icon.UseMnemonic = false;
+                icon.Font = Look.IconFont(big ? 22f : 17f);
+                icon.ForeColor = Look.Band(data);
+                icon.TextAlign = ContentAlignment.TopCenter;
+                icon.SetBounds(pad - Look.Px(4), y - Look.Px(2), box, box);
+                Controls.Add(icon);
+                textLeft = pad + box + Look.Px(6);
+                textWidth = inner - box - Look.Px(6);
+            }
+            Label title = Look.Text(data.Title, Look.Font(big ? 16f : 12.5f, FontStyle.Bold), textWidth, ContentAlignment.TopLeft);
+            title.Location = new Point(textLeft, y);
             Controls.Add(title);
             y += title.Height + Look.Px(4);
 
@@ -324,12 +394,34 @@ namespace Foghorn
             }
             y += Look.Px(big ? 18 : 14);
 
-            Button close = Look.MakeButton(CloseLabel, true, false, big ? 10f : 9f);
-            close.Click += delegate { CloseByButton(); };
-            Controls.Add(close);
-            Size cs = close.PreferredSize;
-            close.SetBounds(width - pad - cs.Width, y, cs.Width, cs.Height);
-            int left = close.Left;
+            if (AsksQuestion)
+            {
+                // Replies get a row of their own, wrapping if the wording is long.
+                var row = new FlowLayoutPanel();
+                row.FlowDirection = FlowDirection.LeftToRight;
+                row.WrapContents = true;
+                row.SetBounds(pad, y, inner, 10);
+                foreach (Button b in CloseButtons(false, big ? 10f : 9f))
+                {
+                    b.Margin = new Padding(0, 0, Look.Px(8), Look.Px(8));
+                    b.MaximumSize = new Size(inner, 0);
+                    row.Controls.Add(b);
+                }
+                row.Height = row.GetPreferredSize(new Size(inner, 0)).Height;
+                Controls.Add(row);
+                y += row.Height + Look.Px(2);
+            }
+            Button close = AsksQuestion ? null : CloseButtons(false, big ? 10f : 9f)[0];
+            Size cs;
+            if (close != null) cs = close.PreferredSize;
+            else using (Button probe = Look.MakeButton("X", false, false, big ? 10f : 9f)) cs = probe.PreferredSize; // footer row height
+            int left = width - pad;
+            if (close != null)
+            {
+                Controls.Add(close);
+                close.SetBounds(width - pad - cs.Width, y, cs.Width, cs.Height);
+                left = close.Left;
+            }
             if (HasLink)
             {
                 Button link = Look.MakeButton("Open link", false, false, big ? 10f : 9f);
@@ -351,7 +443,7 @@ namespace Foghorn
             if (data.DisplaySeconds > 0 && !data.RequireAck)
             {
                 CountdownBar = new Panel();
-                CountdownBar.BackColor = Look.Band(data.Level);
+                CountdownBar.BackColor = Look.Band(data);
                 CountdownBar.SetBounds(0, y - Look.Px(3), width, Look.Px(3));
                 Controls.Add(CountdownBar);
             }
@@ -389,7 +481,7 @@ namespace Foghorn
         {
             Rectangle screen = Screen.PrimaryScreen.Bounds;
             Bounds = screen;
-            BackColor = Look.Curtain(data.Level);
+            BackColor = Look.Curtain(data);
             ForeColor = Color.White;
             KeyPreview = true;
 
@@ -397,8 +489,14 @@ namespace Foghorn
             var items = new List<Control>();
             ContentAlignment mid = ContentAlignment.MiddleCenter;
 
-            Label word = Look.Text((data.Org == "" ? "" : data.Org + "   ") + Look.Word(data.Level), Look.Font(13f, FontStyle.Bold), column, mid);
+            Label word = Look.Text((data.Org == "" ? "" : data.Org + "   ") + Look.Word(data), Look.Font(13f, FontStyle.Bold), column, mid);
             word.ForeColor = Color.FromArgb(225, 225, 225);
+            if (data.Icon != "")
+            {
+                Label icon = Look.Text(data.Icon, Look.IconFont(48f), column, mid);
+                icon.ForeColor = Color.White;
+                items.Add(icon);
+            }
             items.Add(word);
             items.Add(Look.Text(data.Title, Look.Font(screen.Width < Look.Px(1100) ? 26f : 36f, FontStyle.Bold), column, mid));
             if (data.Message != "")
@@ -408,14 +506,16 @@ namespace Foghorn
             items.Add(foot);
 
             int total = 0;
-            int[] gaps = { Look.Px(10), Look.Px(22), Look.Px(30), Look.Px(26) };
+            int[] gaps = data.Icon != ""
+                ? new[] { Look.Px(6), Look.Px(10), Look.Px(22), Look.Px(30), Look.Px(26) }
+                : new[] { Look.Px(10), Look.Px(22), Look.Px(30), Look.Px(26) };
             foreach (Control c in items) total += c.Height;
             var buttons = new FlowLayoutPanel();
             buttons.AutoSize = true; buttons.AutoSizeMode = AutoSizeMode.GrowAndShrink;
             buttons.WrapContents = false;
-            Button close = Look.MakeButton(CloseLabel, true, true, 14f);
-            close.Margin = new Padding(Look.Px(8));
-            close.Click += delegate { CloseByButton(); };
+            List<Button> closers = CloseButtons(true, 14f);
+            foreach (Button b in closers) b.Margin = new Padding(Look.Px(8));
+            Button close = closers[0];
             if (HasLink)
             {
                 Button link = Look.MakeButton("Open link", false, true, 14f);
@@ -423,7 +523,7 @@ namespace Foghorn
                 link.Click += delegate { OpenLink(); };
                 buttons.Controls.Add(link);
             }
-            buttons.Controls.Add(close);
+            foreach (Button b in closers) buttons.Controls.Add(b);
             Controls.Add(buttons);
             Size bs = buttons.PreferredSize;
 
@@ -452,7 +552,7 @@ namespace Foghorn
             foreach (Screen s in Screen.AllScreens)
             {
                 if (s.Primary) continue;
-                var curtain = new Curtain(Look.Curtain(data.Level), s.Bounds);
+                var curtain = new Curtain(Look.Curtain(data), s.Bounds);
                 curtains.Add(curtain);
             }
             Finished += delegate { foreach (Form c in curtains) { try { c.Close(); c.Dispose(); } catch { } } };
@@ -488,20 +588,42 @@ namespace Foghorn
     class AlertManager
     {
         const int MaxCards = 4;
-        readonly Action<string, string> report;
+        readonly Action<string, string, string> report;
         readonly Dictionary<string, AlertWindow> open = new Dictionary<string, AlertWindow>();
         readonly List<AlertWindow> order = new List<AlertWindow>();
         readonly List<AlertData> waiting = new List<AlertData>();
         readonly HashSet<string> seen = new HashSet<string>();
 
-        public AlertManager(Action<string, string> reportEvent) { report = reportEvent; }
+        public AlertManager(Action<string, string, string> reportEvent) { report = reportEvent; }
+
+        /// <summary>
+        /// True when the point is over an alert on screen. A screen lock uses
+        /// this to let clicks through to alerts, so an emergency alert sent to
+        /// a locked room can still be answered.
+        /// </summary>
+        public bool IsOverAlert(Point p)
+        {
+            foreach (AlertWindow w in order)
+            {
+                try { if (w.Visible && w.Bounds.Contains(p)) return true; } catch { }
+            }
+            return false;
+        }
+
+        public bool AnyOpen { get { return order.Count > 0; } }
+
+        /// <summary>Put every open alert back on top, above a screen lock.</summary>
+        public void RaiseAll()
+        {
+            foreach (AlertWindow w in order) { try { if (w.Visible) Native.KeepOnTop(w.Handle); } catch { } }
+        }
 
         public void Show(AlertData a)
         {
             if (seen.Contains(a.Id))
             {
                 // The server is asking again because our "displayed" receipt never arrived. Send it again.
-                if (open.ContainsKey(a.Id)) report(a.Id, "displayed");
+                if (open.ContainsKey(a.Id)) report(a.Id, "displayed", "");
                 return;
             }
             seen.Add(a.Id);
@@ -538,15 +660,15 @@ namespace Foghorn
             Arrange();
             try { w.Show(); } catch (Exception ex) { Log.Write("Could not show alert: " + ex); }
             Log.Write("Showing \"" + a.Title + "\" (" + a.Level + ", " + a.Display + ")");
-            report(a.Id, "displayed");
+            report(a.Id, "displayed", "");
         }
 
         void OnFinished(AlertWindow w, string reason)
         {
             open.Remove(w.Data.Id);
             order.Remove(w);
-            Log.Write("Closed \"" + w.Data.Title + "\": " + reason);
-            report(w.Data.Id, reason);
+            Log.Write("Closed \"" + w.Data.Title + "\": " + reason + (w.Choice != "" ? " (" + w.Choice + ")" : ""));
+            report(w.Data.Id, reason, w.Choice);
             try { w.Dispose(); } catch { }
             for (int i = 0; i < waiting.Count; i++)
             {

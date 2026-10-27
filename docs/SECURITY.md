@@ -19,7 +19,8 @@ not, and what to do about the gaps. Read it before going live.
 |---|---|---|
 | **Administrator** | Username + password | Everything: send, manage accounts, groups, settings, see the client key. |
 | **Sender** | Username + password | Send alerts (optionally only to chosen groups), recall their own alerts, see computers and history. Cannot see settings or the client key. |
-| **API token** | The token | Send and recall alerts. Nothing else. |
+| **Sender allowed to lock** | As a sender, plus *Can lock screens* ticked by an administrator | Also lock and unlock screens, only on computers they may send to. |
+| **API token** | The token | Only its scopes: `send` (send, recall, schedule), `lock` (lock and unlock screens), `read` (read history and the computer list). Never settings, accounts, groups, webhooks or uploads. |
 | **A PC with the client key** | The client key | **Receive** alerts and report that it showed them. It cannot send anything. |
 
 ## What is built in
@@ -91,11 +92,46 @@ Foghorn does not pretend otherwise. What helps:
 For a life-safety message, Foghorn should be **one channel among several** —
 alongside the fire alarm, tannoy and people — never the only one.
 
+## Screen locks
+
+**Lock screens** covers the chosen PCs (or freezes them with the screen
+visible) and blocks keyboard and mouse. It is a classroom-management tool,
+not a security boundary. Here is exactly what it does:
+
+- **Blocked:** every key, including Alt+Tab, the Windows key, Alt+F4,
+  Ctrl+Esc and Ctrl+Shift+Esc. The mouse pointer is frozen. Every monitor is
+  covered by an always-on-top window.
+- **Not blocked: Ctrl+Alt+Del.** Windows reserves it, and no program running
+  as the user can intercept it, by design. From there a student can **sign
+  out**, and, unless you have removed it for students, open **Task Manager**
+  and end the client. If they sign in again while the lock is still in force,
+  the lock comes straight back. The lock's page shows which PCs are still
+  locked, so a PC that has dropped out is visible. Removing Task Manager for
+  students (see above) closes the second route.
+- **Always ends.** Every lock has a time limit (at most 8 hours). The PC
+  enforces that limit itself, so a lock lifts on time even if the PC can no
+  longer reach the server. If something goes wrong, signing out always frees a
+  PC.
+- **Alerts still get through.** Alerts appear above a lock and can be clicked,
+  so an evacuation alert sent to a locked room can still be read and answered.
+- **Who can lock:** administrators, senders an administrator has allowed, and
+  API tokens with the `lock` scope. Senders restricted to certain groups can
+  lock only those. Every lock and unlock is in `foghorn.log` with who did it.
+
+## Webhooks
+
+Webhook addresses are set by administrators only. Each delivery is signed
+(HMAC-SHA256 over the timestamp and body) with a per-webhook secret, so the
+receiver can tell genuine deliveries from forged ones and refuse old ones that
+are replayed later. Deliveries contain alert titles, computer names and
+usernames, so send them only to systems that may hold that information, and
+use `https://` addresses. Foghorn does not follow redirects when delivering.
+
 ## Things Foghorn deliberately does not do
 
-- It does not lock the keyboard or prevent logging off. A full-screen alert covers the screen; it is not a kiosk lock.
+- It does not prevent logging off. A lock blocks the keyboard and mouse, but Ctrl+Alt+Del → Sign out always works (see [Screen locks](#screen-locks)).
 - It does not authenticate individual PCs. Doing that properly means a certificate per machine, which is a lot of machinery for the risk described above.
-- It does not send anything outside your network. No telemetry, no update checks, no external fonts or scripts in the console.
+- It does not send anything outside your network unless an administrator adds a webhook pointing there. No telemetry, no update checks, no external fonts or scripts in the console.
 
 ## Reporting what the PCs send
 
@@ -103,7 +139,8 @@ So you can answer a data-protection question: each client sends the server its
 computer name, the logged-on Windows username and domain, the computer's AD
 distinguished name (its OU), the names of the AD groups in the user's log-on
 token, its Windows version, and its client version. The server adds the IP
-address and the time. Computers not seen for 45 days are forgotten
+address and the time. When an alert has reply buttons, the reply each person
+picks is stored with that computer's delivery record. Computers not seen for 45 days are forgotten
 automatically; an administrator can **Forget** one sooner from the Computers
 page. Alert history keeps per-computer detail for the most recent 60 alerts and
 totals only for older ones, up to 300.

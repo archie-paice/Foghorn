@@ -97,6 +97,70 @@ to a matching computer in the next 10 minutes sees it too.
 **Link (optional)** — adds an *Open link* button that opens a web page in the
 person's browser. Must start with `http://` or `https://`.
 
+**Play a sound.** Choose the Windows alert sound or one your administrators
+have uploaded (see **Sounds** in the menu, where you can listen to each).
+**Keep playing until it is closed** turns it into an alarm that stops the
+moment the person closes or answers the alert.
+
+---
+
+## Designing how it looks
+
+**Look and buttons** changes the alert's appearance. The preview on the right
+updates as you go.
+
+- **Icon:** a symbol beside the title, such as a bell, a calendar or a fire.
+- **Colour:** the band across the top (and the whole background of a
+  full-screen alert). *Auto* uses the colour for the level you chose.
+- **Label in the coloured band:** replaces *Notice / Warning / Urgent*, for
+  example *IT team* or *Exams office*.
+- **Close button wording:** for example *Got it* instead of *Dismiss*.
+- **Reply buttons:** ask a question. Add up to four replies, such as
+  *I'm safe* / *I need help*. The alert stays up until each person picks one,
+  and **Sent alerts** shows a live tally and who chose what. This is useful for
+  a fire-drill roll call or "Can you cover period 3?".
+
+---
+
+## Sending later
+
+Under **When**, choose **Schedule for later**:
+
+- **Once:** pick a date and time.
+- **Every week:** tick the days and set a time. For example "Save your work"
+  at 15:50 every weekday.
+
+The **Scheduled** page lists everything that's waiting, when it next goes out,
+and what happened last time. You can **Pause**, **Edit**, **Send now** or
+**Delete** your own schedules. A schedule sends as you, to the people you
+chose. If the server was switched off at the moment one was due, that run is
+skipped rather than sent late.
+
+---
+
+## Locking screens
+
+If your account is allowed (administrators always are), **Lock screens** in
+the menu locks a room's computers:
+
+1. Choose the computers, the same way as for an alert.
+2. Choose how:
+   - **Blank screen** covers every monitor with your message.
+   - **Freeze** leaves the screen visible, for example while you talk over a
+     presentation, and blocks only keyboard and mouse.
+3. Write a message, choose a **safety limit**, and press **Lock screens**.
+
+Locked rooms appear under **Locked now** with how many PCs are locked.
+**Unlock** lifts one lock; **Unlock everything** (or **Unlock all mine**) lifts
+them all. Every lock also lifts itself at the safety limit, even if the PC
+can't reach the server.
+
+Good to know:
+
+- Alerts still appear above a locked screen and can be answered.
+- Windows always lets someone press **Ctrl+Alt+Del** and sign out. If they
+  sign back in while the lock is on, it comes straight back.
+
 ---
 
 ## Templates

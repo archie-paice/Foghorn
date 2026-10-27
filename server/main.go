@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-var version = "1.0.0"
+var version = "1.1.0"
 
 const firstRunFile = "FIRST-RUN.txt"
 
@@ -47,6 +47,8 @@ type App struct {
 	hub      *hub
 	sessions *sessionStore
 	throttle *throttle
+	hooks    *webhookSender
+	idem     *idemCache
 	closing  atomic.Bool
 }
 
@@ -238,7 +240,7 @@ func resetPassword(dir, username string) error {
 	if cfg, err := loadConfig(dir); err == nil {
 		ln, lerr := net.Listen("tcp", cfg.Listen)
 		if lerr != nil {
-			return fmt.Errorf("the Foghorn server looks like it is running (port %s is in use).\nStop it first:  foghorn-server service stop", cfg.Listen)
+			return fmt.Errorf("the Foghorn server looks like it is running (port %s is in use).\nStop it first:  %s", cfg.Listen, serviceHint("stop"))
 		}
 		ln.Close()
 	}
@@ -257,8 +259,16 @@ func resetPassword(dir, username string) error {
 		return err
 	}
 	fmt.Printf("Temporary password for %s: %s\n", u.Username, pw)
-	fmt.Println("Now start the server again:  foghorn-server service start")
+	fmt.Println("Now start the server again:  " + serviceHint("start"))
 	return nil
+}
+
+// serviceHint is the command that stops or starts the server on this OS.
+func serviceHint(verb string) string {
+	if runtime.GOOS == "windows" {
+		return "foghorn-server service " + verb
+	}
+	return "sudo systemctl " + verb + " foghorn"
 }
 
 func (a *App) routes() http.Handler {
@@ -266,39 +276,81 @@ func (a *App) routes() http.Handler {
 
 	// desktop clients
 	mux.HandleFunc("POST /api/client/poll", a.handlePoll)
+	mux.HandleFunc("GET /api/client/sounds/{id}", a.handleClientSound)
 
 	// sign in / own account
 	mux.HandleFunc("POST /api/login", a.handleLogin)
 	mux.HandleFunc("POST /api/logout", a.handleLogout)
-	mux.HandleFunc("GET /api/me", a.guard("self", a.handleMe))
-	mux.HandleFunc("POST /api/me/password", a.guard("self", a.handleChangeOwnPassword))
+	mux.HandleFunc("GET /api/me", a.guard("self", "", a.handleMe))
+	mux.HandleFunc("POST /api/me/password", a.guard("self", "", a.handleChangeOwnPassword))
+	mux.HandleFunc("GET /api/meta", a.guard("any", "", a.handleMeta))
 
-	// anyone signed in
-	mux.HandleFunc("GET /api/alerts", a.guard("any", a.handleListAlerts))
-	mux.HandleFunc("POST /api/alerts", a.guard("any", a.handleSendAlert))
-	mux.HandleFunc("GET /api/alerts/{id}", a.guard("any", a.handleGetAlert))
-	mux.HandleFunc("POST /api/alerts/{id}/recall", a.guard("any", a.handleRecallAlert))
-	mux.HandleFunc("POST /api/reach", a.guard("any", a.handleReach))
-	mux.HandleFunc("GET /api/clients", a.guard("any", a.handleListClients))
-	mux.HandleFunc("GET /api/groups", a.guard("any", a.handleListGroups))
-	mux.HandleFunc("GET /api/templates", a.guard("any", a.handleListTemplates))
-	mux.HandleFunc("POST /api/templates", a.guard("any", a.handleSaveTemplate))
-	mux.HandleFunc("DELETE /api/templates/{id}", a.guard("any", a.handleDeleteTemplate))
+	// The second argument is the scope an API token needs for the call.
+	// alerts
+	mux.HandleFunc("GET /api/alerts", a.guard("any", "read", a.handleListAlerts))
+	mux.HandleFunc("POST /api/alerts", a.guard("any", "send", a.handleSendAlert))
+	mux.HandleFunc("GET /api/alerts/{id}", a.guard("any", "read", a.handleGetAlert))
+	mux.HandleFunc("POST /api/alerts/{id}/recall", a.guard("any", "send", a.handleRecallAlert))
+	mux.HandleFunc("POST /api/reach", a.guard("any", "read", a.handleReach))
+	mux.HandleFunc("GET /api/clients", a.guard("any", "read", a.handleListClients))
+	mux.HandleFunc("GET /api/groups", a.guard("any", "read", a.handleListGroups))
+	mux.HandleFunc("GET /api/templates", a.guard("any", "read", a.handleListTemplates))
+	mux.HandleFunc("POST /api/templates", a.guard("any", "send", a.handleSaveTemplate))
+	mux.HandleFunc("DELETE /api/templates/{id}", a.guard("any", "send", a.handleDeleteTemplate))
+
+	// screen locks
+	mux.HandleFunc("GET /api/locks", a.guard("any", "read", a.handleListLocks))
+	mux.HandleFunc("POST /api/locks", a.guard("any", "lock", a.handleCreateLock))
+	mux.HandleFunc("POST /api/locks/unlock-all", a.guard("any", "lock", a.handleUnlockAll))
+	mux.HandleFunc("GET /api/locks/{id}", a.guard("any", "read", a.handleGetLock))
+	mux.HandleFunc("POST /api/locks/{id}/unlock", a.guard("any", "lock", a.handleUnlock))
+
+	// schedules
+	mux.HandleFunc("GET /api/schedules", a.guard("any", "read", a.handleListSchedules))
+	mux.HandleFunc("POST /api/schedules", a.guard("any", "send", a.handleSaveSchedule))
+	mux.HandleFunc("PUT /api/schedules/{id}", a.guard("any", "send", a.handleSaveSchedule))
+	mux.HandleFunc("DELETE /api/schedules/{id}", a.guard("any", "send", a.handleDeleteSchedule))
+	mux.HandleFunc("POST /api/schedules/{id}/run", a.guard("any", "send", a.handleRunSchedule))
+
+	// sounds
+	mux.HandleFunc("GET /api/sounds", a.guard("any", "read", a.handleListSounds))
+	mux.HandleFunc("GET /api/sounds/{id}/file", a.guard("any", "read", a.handleSoundFile))
+	mux.HandleFunc("POST /api/sounds", a.guard("admin", "", a.handleUploadSound))
+	mux.HandleFunc("PUT /api/sounds/{id}", a.guard("admin", "", a.handleRenameSound))
+	mux.HandleFunc("DELETE /api/sounds/{id}", a.guard("admin", "", a.handleDeleteSound))
 
 	// administrators
-	mux.HandleFunc("DELETE /api/clients/{id}", a.guard("admin", a.handleForgetClient))
-	mux.HandleFunc("POST /api/groups", a.guard("admin", a.handleSaveGroup))
-	mux.HandleFunc("PUT /api/groups/{id}", a.guard("admin", a.handleSaveGroup))
-	mux.HandleFunc("DELETE /api/groups/{id}", a.guard("admin", a.handleDeleteGroup))
-	mux.HandleFunc("GET /api/users", a.guard("admin", a.handleListUsers))
-	mux.HandleFunc("POST /api/users", a.guard("admin", a.handleSaveUser))
-	mux.HandleFunc("PUT /api/users/{id}", a.guard("admin", a.handleSaveUser))
-	mux.HandleFunc("DELETE /api/users/{id}", a.guard("admin", a.handleDeleteUser))
-	mux.HandleFunc("GET /api/settings", a.guard("admin", a.handleGetSettings))
-	mux.HandleFunc("PUT /api/settings", a.guard("admin", a.handleSaveSettings))
-	mux.HandleFunc("POST /api/settings/rotate-client-key", a.guard("admin", a.handleRotateKey))
-	mux.HandleFunc("POST /api/tokens", a.guard("admin", a.handleCreateToken))
-	mux.HandleFunc("DELETE /api/tokens/{id}", a.guard("admin", a.handleDeleteToken))
+	mux.HandleFunc("DELETE /api/clients/{id}", a.guard("admin", "", a.handleForgetClient))
+	mux.HandleFunc("POST /api/groups", a.guard("admin", "", a.handleSaveGroup))
+	mux.HandleFunc("PUT /api/groups/{id}", a.guard("admin", "", a.handleSaveGroup))
+	mux.HandleFunc("DELETE /api/groups/{id}", a.guard("admin", "", a.handleDeleteGroup))
+	mux.HandleFunc("GET /api/users", a.guard("admin", "", a.handleListUsers))
+	mux.HandleFunc("POST /api/users", a.guard("admin", "", a.handleSaveUser))
+	mux.HandleFunc("PUT /api/users/{id}", a.guard("admin", "", a.handleSaveUser))
+	mux.HandleFunc("DELETE /api/users/{id}", a.guard("admin", "", a.handleDeleteUser))
+	mux.HandleFunc("GET /api/settings", a.guard("admin", "", a.handleGetSettings))
+	mux.HandleFunc("PUT /api/settings", a.guard("admin", "", a.handleSaveSettings))
+	mux.HandleFunc("POST /api/settings/rotate-client-key", a.guard("admin", "", a.handleRotateKey))
+	mux.HandleFunc("POST /api/tokens", a.guard("admin", "", a.handleCreateToken))
+	mux.HandleFunc("DELETE /api/tokens/{id}", a.guard("admin", "", a.handleDeleteToken))
+	mux.HandleFunc("GET /api/webhooks", a.guard("admin", "", a.handleListWebhooks))
+	mux.HandleFunc("POST /api/webhooks", a.guard("admin", "", a.handleSaveWebhook))
+	mux.HandleFunc("PUT /api/webhooks/{id}", a.guard("admin", "", a.handleSaveWebhook))
+	mux.HandleFunc("DELETE /api/webhooks/{id}", a.guard("admin", "", a.handleDeleteWebhook))
+	mux.HandleFunc("POST /api/webhooks/{id}/test", a.guard("admin", "", a.handleTestWebhook))
+
+	// The API description, for code generators and API tools. No sign-in needed:
+	// it describes the API, it does not grant any access to it.
+	mux.HandleFunc("GET /api/openapi.json", func(w http.ResponseWriter, r *http.Request) {
+		b, err := webFS.ReadFile("web/openapi.json")
+		if err != nil {
+			writeErr(w, http.StatusNotFound, "not_found", "No API description in this build.")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Write(b)
+	})
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version})
@@ -353,7 +405,8 @@ func runServer(ctx context.Context, dataDir, listenOverride string, interactive 
 		log.Printf("ERROR opening data: %v", err)
 		return fmt.Errorf("cannot read data in %s: %w", dataDir, err)
 	}
-	app := &App{cfg: cfg, store: st, hub: newHub(), sessions: newSessionStore(), throttle: newThrottle()}
+	app := &App{cfg: cfg, store: st, hub: newHub(), sessions: newSessionStore(), throttle: newThrottle(),
+		hooks: newWebhookSender(), idem: newIdemCache()}
 	if err := app.bootstrap(); err != nil {
 		return err
 	}
@@ -405,6 +458,10 @@ func runServer(ctx context.Context, dataDir, listenOverride string, interactive 
 		}
 	}()
 
+	hooksStop := make(chan struct{})
+	app.runWebhooks(hooksStop)
+	go app.scheduler(ctx)
+
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(ln) }()
 
@@ -422,6 +479,8 @@ func runServer(ctx context.Context, dataDir, listenOverride string, interactive 
 		srv.Close()
 	}
 	<-saverDone
+	close(hooksStop)
+	app.hooks.wg.Wait()
 	app.store.mu.Lock()
 	app.store.dirtyClients = true
 	app.store.mu.Unlock()

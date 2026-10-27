@@ -30,9 +30,13 @@ Active Directory.
 - **Acknowledgement tracking.** Ask people to confirm they read it, and see who did.
 - **Recall** — take an alert off every screen still showing it.
 - **Live delivery view.** Watch, per computer, who has displayed and confirmed each alert.
-- **Templates** for wording you reuse. Wording only — audience is always a deliberate choice.
-- **Roles.** *Administrators* manage everything. *Senders* can send alerts, optionally limited to their own groups (a tutor to their own classroom, say). Every alert is signed with the sender's name.
-- **API tokens** for scripts and monitoring systems.
+- **Alert builder** with a live preview: icon, colour, header label, button wording, and **reply buttons** ("I'm safe" / "I need help") with a live tally of who picked what.
+- **Lock screens.** Teachers can cover a room's screens with a message, or freeze them with the screen still visible, and block keyboard and mouse. Locks lift with one click, or by themselves at a time limit.
+- **Custom sounds.** Upload WAV or MP3 files (a school bell, an alarm). They can play once or loop until the alert is answered.
+- **Scheduled alerts**: once, or every week ("Save your work" at 15:50 every weekday).
+- **Templates** for wording and design you reuse. The audience is never saved, so it's always a deliberate choice.
+- **Roles.** *Administrators* manage everything. *Senders* can send alerts, optionally limited to their own groups (a tutor to their own classroom, say), and can be allowed to lock screens. Every alert is signed with the sender's name.
+- **An API for integrations.** Scoped tokens (send / lock / read), idempotent sends, signed **webhooks** for replies and locks, and an OpenAPI description. There's a [Laravel guide](docs/INTEGRATIONS-LARAVEL.md) with drop-in code.
 - **Small.** About 40 MB of memory on the server with 1,500 PCs connected. The client is a 64 KB `.exe` and needs nothing installed on Windows 10 or 11.
 - **Standard deployment.** Roll the client out with an MSI + transform through Group Policy Software Installation, Intune, SCCM, PDQ, or a start-up script.
 - **No internet needed.** Console uses system fonts only. No CDN, no telemetry, no external calls.

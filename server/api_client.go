@@ -1,6 +1,6 @@
 package main
 
-// api_client.go - the one endpoint desktop clients talk to.
+// api_client.go - the endpoints desktop clients talk to.
 //
 // Clients long-poll POST /api/client/poll. The request carries who they are and
 // anything that happened since last time (alert shown, acknowledged, closed).
@@ -59,7 +59,9 @@ type clientHello struct {
 
 type clientEvent struct {
 	AlertID string `json:"alert_id"`
-	Event   string `json:"event"` // displayed | acknowledged | dismissed | timeout | recalled
+	LockID  string `json:"lock_id"`
+	Event   string `json:"event"`  // alerts: displayed | acknowledged | dismissed | timeout | recalled; locks: locked | released
+	Choice  string `json:"choice"` // the reply button pressed, with "acknowledged"
 }
 
 type pollRequest struct {
@@ -81,11 +83,31 @@ type wireAlert struct {
 	Sender         string `json:"sender"`
 	Org            string `json:"org"`
 	CreatedAt      string `json:"created_at"`
+
+	Accent       string   `json:"accent"`
+	Label        string   `json:"label"`
+	Icon         string   `json:"icon"` // the symbol itself, not its name
+	DismissLabel string   `json:"dismiss_label"`
+	Responses    []string `json:"responses"`
+	SoundID      string   `json:"sound_id"`
+	SoundExt     string   `json:"sound_ext"`
+	SoundLoop    bool     `json:"sound_loop"`
+}
+
+type wireLock struct {
+	ID          string `json:"id"`
+	Mode        string `json:"mode"`
+	Message     string `json:"message"`
+	Sender      string `json:"sender"`
+	Org         string `json:"org"`
+	SecondsLeft int    `json:"seconds_left"` // relative, so a PC with a wrong clock still unlocks on time
 }
 
 type pollResponse struct {
 	Alerts   []wireAlert `json:"alerts"`
 	Recalled []string    `json:"recalled"`
+	Locks    []wireLock  `json:"locks"`
+	Unlocks  []string    `json:"unlocks"`
 	RetryMS  int         `json:"retry_ms"`
 	Server   string      `json:"server"`
 }
@@ -135,9 +157,11 @@ func (a *App) handlePoll(w http.ResponseWriter, r *http.Request) {
 	st.mu.Lock()
 	c := st.touchClient(h, ip, now)
 	c.polling++
-	changed := st.applyEvents(c, req.Events, now)
+	_, hooks := st.applyEvents(c, req.Events, now)
 	st.mu.Unlock()
-	_ = changed
+	for _, ev := range hooks {
+		a.emit(ev.name, ev.data)
+	}
 
 	defer func() {
 		st.mu.Lock()
@@ -156,18 +180,20 @@ func (a *App) handlePoll(w http.ResponseWriter, r *http.Request) {
 
 		st.mu.Lock()
 		alerts, recalled := st.pendingFor(c, time.Now())
+		locks, unlocks := st.pendingLocksFor(c, time.Now())
 		st.mu.Unlock()
 
-		if len(alerts) > 0 || len(recalled) > 0 || !req.Wait || a.closing.Load() {
+		if len(alerts) > 0 || len(recalled) > 0 || len(locks) > 0 || len(unlocks) > 0 || !req.Wait || a.closing.Load() {
 			writeJSON(w, http.StatusOK, pollResponse{
-				Alerts: alerts, Recalled: recalled, RetryMS: 1000, Server: version,
+				Alerts: alerts, Recalled: recalled, Locks: locks, Unlocks: unlocks, RetryMS: 1000, Server: version,
 			})
 			return
 		}
 		select {
 		case <-wakeCh:
 		case <-deadline.C:
-			writeJSON(w, http.StatusOK, pollResponse{Alerts: []wireAlert{}, Recalled: []string{}, RetryMS: 250, Server: version})
+			writeJSON(w, http.StatusOK, pollResponse{Alerts: []wireAlert{}, Recalled: []string{},
+				Locks: []wireLock{}, Unlocks: []string{}, RetryMS: 250, Server: version})
 			return
 		case <-r.Context().Done():
 			return
@@ -213,13 +239,27 @@ func (s *Store) touchClient(h clientHello, ip string, now time.Time) *ClientInfo
 	return c
 }
 
-// applyEvents records what the client says happened. Caller holds the lock.
-func (s *Store) applyEvents(c *ClientInfo, events []clientEvent, now time.Time) bool {
+// hookEvent is a webhook event worked out under the store lock and sent after it is released.
+type hookEvent struct {
+	name string
+	data map[string]any
+}
+
+// applyEvents records what the client says happened, and returns the webhook
+// events that follow from it. Caller holds the lock.
+func (s *Store) applyEvents(c *ClientInfo, events []clientEvent, now time.Time) (bool, []hookEvent) {
 	changed := false
+	var hooks []hookEvent
 	if len(events) > 200 {
 		events = events[:200]
 	}
 	for _, ev := range events {
+		if ev.LockID != "" {
+			if s.applyLockEvent(c, ev, now) {
+				s.dirtyLocks = true
+			}
+			continue
+		}
 		a := s.alertByID(ev.AlertID)
 		if a == nil || a.Deliveries == nil {
 			continue
@@ -244,6 +284,20 @@ func (s *Store) applyEvents(c *ClientInfo, events []clientEvent, now time.Time) 
 				d.ClosedAt = &t
 				d.CloseReason = "acknowledged"
 				changed = true
+				// Only a reply the alert actually offered is recorded.
+				for _, r := range a.Spec.Responses {
+					if r == ev.Choice {
+						d.Response = r
+					}
+				}
+				name := "alert.acknowledged"
+				if d.Response != "" {
+					name = "alert.responded"
+				}
+				hooks = append(hooks, hookEvent{name, map[string]any{
+					"alert_id": a.ID, "title": a.Spec.Title, "hostname": d.Hostname, "user": d.User,
+					"domain": c.Domain, "response": d.Response, "at": t,
+				}})
 			}
 		case "dismissed", "timeout", "recalled":
 			if d.ClosedAt == nil {
@@ -256,7 +310,7 @@ func (s *Store) applyEvents(c *ClientInfo, events []clientEvent, now time.Time) 
 	if changed {
 		s.dirtyAlerts = true
 	}
-	return changed
+	return changed, hooks
 }
 
 // pendingFor works out what this client should be told right now, and marks
@@ -306,14 +360,23 @@ func (s *Store) pendingFor(c *ClientInfo, now time.Time) (alerts []wireAlert, re
 		d.SentAt = now
 		s.dirtyAlerts = true
 
-		alerts = append(alerts, wireAlert{
+		wa := wireAlert{
 			ID: a.ID, Title: a.Spec.Title, Message: a.Spec.Message,
 			Level: a.Spec.Level, Display: a.Spec.Display,
 			RequireAck: a.Spec.RequireAck, DisplaySeconds: a.Spec.DisplaySeconds,
 			Sound: a.Spec.Sound, Link: a.Spec.Link,
 			Sender: a.SenderName, Org: s.State.Settings.OrgName,
 			CreatedAt: a.CreatedAt.UTC().Format(time.RFC3339),
-		})
+			Accent:    a.Spec.Accent, Label: a.Spec.Label, Icon: alertIcons[a.Spec.Icon],
+			DismissLabel: a.Spec.DismissLabel, Responses: a.Spec.Responses, SoundLoop: a.Spec.SoundLoop,
+		}
+		if wa.Responses == nil {
+			wa.Responses = []string{}
+		}
+		if snd := s.soundByID(a.Spec.SoundID); snd != nil {
+			wa.SoundID, wa.SoundExt = snd.ID, snd.Ext
+		}
+		alerts = append(alerts, wa)
 	}
 	return alerts, recalled
 }
