@@ -32,9 +32,15 @@ jobs:
         shell: powershell
     env:
       LISTEN: 127.0.0.1:18080
-      DATA: ${{ runner.temp }}\foghorn-data
     steps:
       - uses: actions/checkout@v4
+
+      # runner.temp cannot be used in job-level env: the runner context does
+      # not exist when that is evaluated, and GitHub rejects the whole workflow
+      # before any job starts. Set the path here, once there is a runner.
+      - name: Paths on this runner
+        run: |
+          "DATA=$env:RUNNER_TEMP\foghorn-data" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
 
       - name: Which compiler is on this runner
         run: |
