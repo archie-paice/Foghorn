@@ -2,6 +2,20 @@
 
 All notable changes to Foghorn are listed here, newest first.
 
+## Unreleased
+
+### Added
+- **Discord webhooks.** Paste a Discord channel's webhook URL into
+  **Settings → Webhooks** and Foghorn posts readable messages there: alerts
+  sent, read, answered and recalled, and screens locked and unlocked. Mentions
+  are switched off, so an alert can't ping `@everyone`. Settings shows only
+  the start of the URL and hides the signing-secret steps, which Discord
+  doesn't use. See [docs/API.md](docs/API.md#discord).
+
+### Changed
+- Webhook addresses are no longer written in full to the server log or to
+  delivery errors.
+
 ## 1.2.0
 
 Update the server and the PCs from the web console. **Deploy this version's

@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -175,7 +176,15 @@ func (a *App) deliver(job webhookJob, stop <-chan struct{}) {
 
 // postOnce makes one delivery attempt and returns "" on success.
 func (a *App) postOnce(job webhookJob, attempt int) string {
-	req, err := http.NewRequest(http.MethodPost, job.hook.URL, bytes.NewReader(job.payload))
+	body := job.payload
+	if isDiscordWebhook(job.hook.URL) {
+		b, err := discordBody(job.payload)
+		if err != nil {
+			return "could not build the Discord message: " + err.Error()
+		}
+		body = b
+	}
+	req, err := http.NewRequest(http.MethodPost, job.hook.URL, bytes.NewReader(body))
 	if err != nil {
 		return err.Error()
 	}
@@ -186,14 +195,24 @@ func (a *App) postOnce(job webhookJob, attempt int) string {
 	req.Header.Set("X-Foghorn-Delivery", job.id)
 	req.Header.Set("X-Foghorn-Attempt", strconv.Itoa(attempt))
 	req.Header.Set("X-Foghorn-Timestamp", ts)
-	req.Header.Set("X-Foghorn-Signature", signWebhook(job.hook.Secret, ts, job.payload))
+	req.Header.Set("X-Foghorn-Signature", signWebhook(job.hook.Secret, ts, body))
 	resp, err := a.hooks.client.Do(req)
 	if err != nil {
-		return err.Error()
+		return redactURL(err.Error(), job.hook.URL)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Sprintf("answered HTTP %d", resp.StatusCode)
+		problem := fmt.Sprintf("answered HTTP %d", resp.StatusCode)
+		if isDiscordWebhook(job.hook.URL) {
+			// Discord says what was wrong in a short JSON body.
+			var e struct {
+				Message string `json:"message"`
+			}
+			if json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&e) == nil && e.Message != "" {
+				problem += ": " + cleanText(e.Message, 200)
+			}
+		}
+		return problem
 	}
 	return ""
 }
@@ -209,6 +228,7 @@ type webhookView struct {
 	CreatedAt time.Time `json:"created_at"`
 	LastAt    time.Time `json:"last_at"`
 	LastError string    `json:"last_error"`
+	Kind      string    `json:"kind"` // json | discord
 }
 
 func viewWebhook(h *Webhook) webhookView {
@@ -216,7 +236,16 @@ func viewWebhook(h *Webhook) webhookView {
 	if ev == nil {
 		ev = []string{}
 	}
-	return webhookView{h.ID, h.Name, h.URL, ev, h.Enabled, h.CreatedAt, h.LastAt, h.LastError}
+	return webhookView{h.ID, h.Name, h.URL, ev, h.Enabled, h.CreatedAt, h.LastAt, h.LastError, webhookKind(h.URL)}
+}
+
+// redactURL keeps a webhook's address (which, for Discord, holds the
+// token) out of error messages that are logged and shown in the console.
+func redactURL(msg, u string) string {
+	if p, err := url.Parse(u); err == nil && p.Host != "" {
+		msg = strings.ReplaceAll(msg, u, p.Scheme+"://"+p.Host+"/…")
+	}
+	return msg
 }
 
 func (a *App) handleListWebhooks(w http.ResponseWriter, r *http.Request, id *identity) {
@@ -294,7 +323,7 @@ func (a *App) handleSaveWebhook(w http.ResponseWriter, r *http.Request, id *iden
 	v := viewWebhook(h)
 	a.store.mu.Unlock()
 	a.save()
-	log.Printf("webhook %q -> %s saved by %s", v.Name, v.URL, id.User.Username)
+	log.Printf("webhook %q -> %s saved by %s", v.Name, redactURL(v.URL, v.URL), id.User.Username)
 	writeJSON(w, http.StatusOK, map[string]any{"webhook": v, "secret": secret})
 }
 

@@ -1180,25 +1180,29 @@
           var e2 = h('p', { class: 'error' });
           var dlg = dialog(w ? 'Edit webhook' : 'New webhook', [h('div', { class: 'stack' },
             h('label', { class: 'field' }, h('span', null, 'Name'), name),
-            h('label', { class: 'field' }, h('span', null, 'Address Foghorn sends to'), url),
+            h('label', { class: 'field' }, h('span', null, 'Address Foghorn sends to'), url,
+              h('small', null, 'For Discord, paste the channel’s webhook URL (Server Settings → Integrations → Webhooks → Copy Webhook URL). Foghorn posts readable messages there.')),
             h('div', { class: 'field' }, h('span', null, 'Events'), h('div', { class: 'checklist wide' }, boxes), h('small', null, 'Tick none to receive every event.')), e2)], [
             h('button', { class: 'btn', onclick: function () { dlg.close(); } }, 'Cancel'),
             h('button', { class: 'btn primary', onclick: function () {
               var body = { name: name.value, url: url.value, events: chosen, enabled: w ? w.enabled : true };
               (w ? api('PUT', '/api/webhooks/' + w.id, body) : api('POST', '/api/webhooks', body)).then(function (res) {
                 dlg.close(); load();
-                if (res.secret) secretDialog('Signing secret', 'Foghorn signs every delivery with this. Put it in your receiving app (for Laravel: FOGHORN_WEBHOOK_SECRET in .env) to check deliveries are genuine.', res.secret, 'It is not shown again; use “New secret” if it is lost.');
+                if (res.secret && res.webhook && res.webhook.kind !== 'discord') secretDialog('Signing secret', 'Foghorn signs every delivery with this. Put it in your receiving app (for Laravel: FOGHORN_WEBHOOK_SECRET in .env) to check deliveries are genuine.', res.secret, 'It is not shown again; use “New secret” if it is lost.');
                 else toast('Saved');
               }).catch(function (x) { e2.textContent = x.message; });
             } }, w ? 'Save' : 'Create webhook')]);
         }
         var list = r.webhooks || [];
         panel.appendChild(h('div', { class: 'row' }, h('h2', null, 'Webhooks'), h('span', { class: 'spacer' }), h('button', { class: 'btn', onclick: function () { edit(null); } }, 'New webhook')));
-        panel.appendChild(h('p', null, 'Tell another system – your website, Teams, a logging tool – the moment something happens: an alert is answered, screens are locked. Each delivery is a signed JSON POST. ', h('a', { href: '#/api' }, 'How to receive them')));
+        panel.appendChild(h('p', null, 'Tell another system – your website, a Discord channel, a logging tool – the moment something happens: an alert is answered, screens are locked. Each delivery is a signed JSON POST; Discord webhook URLs get ready-made messages instead. ', h('a', { href: '#/api' }, 'How to receive them')));
         if (list.length) panel.appendChild(h('div', { class: 'tablewrap' }, h('table', null,
           h('thead', null, h('tr', null, h('th', null, 'Name'), h('th', null, 'Events'), h('th', null, 'Last delivery'), h('th'))),
           h('tbody', null, list.map(function (w) {
-            return h('tr', null, h('td', null, h('b', null, w.name), w.enabled ? null : h('span', { class: 'pill recalled' }, 'Off'), h('div', { class: 'muted small mono' }, w.url)),
+            var discord = w.kind === 'discord';
+            // A Discord URL is its own password, so show only the start of it.
+            var shown = discord ? w.url.replace(/(\/webhooks\/\d+\/).+$/, '$1…') : w.url;
+            return h('tr', null, h('td', null, h('b', null, w.name), w.enabled ? null : h('span', { class: 'pill recalled' }, 'Off'), discord ? h('span', { class: 'pill' }, 'Discord') : null, h('div', { class: 'muted small mono' }, shown)),
               h('td', { class: 'small' }, w.events.length ? w.events.join(', ') : 'Everything'),
               h('td', { class: 'small' }, w.last_at && w.last_at.slice(0, 4) !== '0001' ? when(w.last_at) : 'never', w.last_error ? h('div', { class: 'error' }, w.last_error) : (w.last_at && w.last_at.slice(0, 4) !== '0001' ? h('div', { class: 'ok' }, 'Delivered') : null)),
               h('td', { class: 'nowrap' },
@@ -1209,12 +1213,12 @@
                 h('button', { class: 'btn sm', onclick: function () {
                   api('PUT', '/api/webhooks/' + w.id, { name: w.name, url: w.url, events: w.events, enabled: !w.enabled }).then(load).catch(fail);
                 } }, w.enabled ? 'Turn off' : 'Turn on'), ' ',
-                h('button', { class: 'btn sm', onclick: function () {
+                discord ? null : h('button', { class: 'btn sm', onclick: function () {
                   confirmDialog('Make a new signing secret?', h('p', null, 'The receiving app rejects deliveries until you give it the new secret.'), 'New secret', true).then(function (y) {
                     if (y) api('PUT', '/api/webhooks/' + w.id, { name: w.name, url: w.url, events: w.events, enabled: w.enabled, rotate_secret: true })
                       .then(function (res) { secretDialog('New signing secret', 'Update your receiving app with this.', res.secret); }).catch(fail);
                   });
-                } }, 'New secret'), ' ',
+                } }, 'New secret'), discord ? null : ' ',
                 h('button', { class: 'btn sm danger', onclick: function () {
                   confirmDialog('Delete “' + w.name + '”?', h('p', null, 'Foghorn stops telling it anything.'), 'Delete', true).then(function (y) { if (y) api('DELETE', '/api/webhooks/' + w.id).then(load).catch(fail); });
                 } }, 'Delete')));

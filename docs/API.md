@@ -275,6 +275,25 @@ Answer with any `2xx` within 10 seconds. A failed delivery is retried after
 5 s, 30 s and 2 min, then dropped; the last error shows in Settings. A retry
 has the same `id`, so ignore ids you have already handled.
 
+### Discord
+
+To post events into a Discord channel, create a webhook in Discord
+(**Server Settings → Integrations → Webhooks → New Webhook → Copy Webhook
+URL**) and paste that URL into Foghorn as the address. Foghorn recognises
+`https://discord.com/api/webhooks/…` addresses (and `discordapp.com`,
+`ptb.`, `canary.`) and sends each event as a Discord message with one embed
+instead of the JSON above:
+
+- **Alert sent**: the title, message and level colour, with fields for who
+  it went to, who sent it, how many computers it reached and any reply buttons.
+- **Read / Reply**: who on which computer read the alert or which button they pressed.
+- **Alert recalled**, **Screens locked** and **Screens unlocked**, with who did it and where.
+
+Mentions are turned off, so an alert containing `@everyone` cannot ping the
+channel. Discord ignores the signature, so there is no secret to set up. The
+URL itself is the password, so treat it like one: Settings only shows the
+start of it. To post into a thread, add `?thread_id=<id>` to the URL.
+
 ## Errors
 
 Errors are JSON with a code and a sentence you can show to a person:
