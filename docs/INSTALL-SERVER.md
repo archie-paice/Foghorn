@@ -486,14 +486,26 @@ Linux, use `network_mode: host` in place of `ports:`.
 The volume is named after the project folder, so `foghorn_foghorn-data` if
 the folder is called `Foghorn`. `docker volume ls` shows the exact name.
 
-**Upgrading.** **Update server** in the console is switched off in a container,
-because a program replaced inside a container is lost when the container is
-recreated. Update the image instead. The data volume is kept:
+**Upgrading.** From 1.3, **Update server** on the **Updates** page works in a
+container too. A program replaced inside the image would be lost when the
+container is recreated, so Foghorn saves the new version in the data volume
+(`/data/bin/foghorn-server`) and exits. Docker's restart policy
+(`restart: unless-stopped` in `docker-compose.yml`) starts it again. On every
+start, the image's program hands over to the copy in the volume if that copy
+is newer.
+
+You can still update by rebuilding the image. The data volume is kept, and
+an image newer than the copy in the volume takes over again:
 
 ```bash
 git pull
 docker compose up -d --build
 ```
+
+If you start the container with `docker run` rather than Compose, give it
+`--restart unless-stopped` so it comes back after an update. To undo an update
+made from the console, delete `/data/bin` and restart the container. It then
+runs the image's version again.
 
 Rolling out new **client** versions from **Updates** works the same as on any
 other server.

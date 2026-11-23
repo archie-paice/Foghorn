@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-var version = "1.2.1"
+var version = "1.3.0"
 
 const firstRunFile = "FIRST-RUN.txt"
 
@@ -95,6 +95,9 @@ func main() {
 		dataDir := fl.String("data", defaultDataDir(), "folder for data, config and logs")
 		listen := fl.String("listen", "", "address to listen on, e.g. :8080 (overrides config.json)")
 		fl.Parse(args)
+		if inContainer() {
+			handOffToNewer(*dataDir) // an update installed from the console (container.go)
+		}
 		if isWindowsService() {
 			runAsService(*dataDir, *listen)
 			return
@@ -348,6 +351,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /api/webhooks/{id}/test", a.guard("admin", "", a.handleTestWebhook))
 	mux.HandleFunc("GET /api/updates", a.guard("admin", "", a.handleUpdateStatus))
 	mux.HandleFunc("POST /api/updates/check", a.guard("admin", "", a.handleCheckUpdates))
+	mux.HandleFunc("PUT /api/updates/settings", a.guard("admin", "", a.handleUpdateSettings))
 	mux.HandleFunc("POST /api/updates/server", a.guard("admin", "", a.handleUpdateServer))
 	mux.HandleFunc("PUT /api/updates/rollout", a.guard("admin", "", a.handleStartRollout))
 	mux.HandleFunc("DELETE /api/updates/rollout", a.guard("admin", "", a.handleStopRollout))
@@ -473,7 +477,9 @@ func runServer(ctx context.Context, dataDir, listenOverride string, interactive 
 
 	hooksStop := make(chan struct{})
 	app.runWebhooks(hooksStop)
+	app.noteServerVersion()
 	go app.scheduler(ctx)
+	go app.autoCheckUpdates(ctx)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(ln) }()

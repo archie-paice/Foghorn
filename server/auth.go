@@ -339,7 +339,35 @@ func (a *App) guard(role, scope string, h authedHandler) http.HandlerFunc {
 			writeErr(w, http.StatusForbidden, "password_change_required", "Choose a new password before continuing.")
 			return
 		}
-		h(w, r, id)
+		if !id.ViaToken || r.Method == http.MethodGet || r.Method == http.MethodHead {
+			h(w, r, id)
+			return
+		}
+		// A change made through the API: say so to webhooks that asked for api.call.
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		start := time.Now()
+		h(rec, r, id)
+		a.emit("api.call", map[string]any{
+			"token": id.User.DisplayName, "method": r.Method, "path": r.URL.Path,
+			"status": rec.status, "ip": a.remoteIP(r), "ms": time.Since(start).Milliseconds(),
+		})
+	}
+}
+
+// statusRecorder notes the status a handler answered with.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
 	}
 }
 

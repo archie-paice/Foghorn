@@ -2,6 +2,35 @@
 
 All notable changes to Foghorn are listed here, newest first.
 
+## 1.3.0
+
+Webhooks can now follow every step of an update, and a server in Docker can
+update itself from the console.
+
+### Added
+- **Update events for webhooks**, including Discord:
+  - `update.available`: a new release, sent once per release.
+  - `update.server_installed`: the server is running a new version, and who
+    updated it.
+  - `update.rollout_started`, `_paused`, `_resumed` and `_stopped`.
+  - `update.pc_updated` and `update.pc_failed`, with the reason for a failure.
+  - `update.rollout_complete`: every PC in a rollout is on the new version.
+- **Check for new versions once a day**, a switch on the Updates page. When
+  it's on, the server asks GitHub for the latest release each day, so
+  `update.available` goes out without anyone pressing **Check for updates**.
+  It's off by default, so Foghorn still never calls out by itself unless you
+  turn this on.
+- **`api.call` webhook event**: an audit trail of changes made with API
+  tokens. It records the token name, method, path, status, IP and time taken,
+  never the token or the request body. It's only sent to webhooks that tick
+  it, because it fires on every change an integration makes.
+- **Update server works in Docker.** The new version is saved in the data
+  volume (`/data/bin`), and Docker's restart policy starts it. On each start,
+  the image's program hands over to that copy if it's newer. Rebuilding the
+  image still works, and a newer image takes over again. Delete `/data/bin`
+  to go back to the image's version. See
+  [INSTALL-SERVER.md, Appendix C](docs/INSTALL-SERVER.md#appendix-c-running-in-docker).
+
 ## 1.2.1
 
 Fixes custom alert sounds going silent, and adds Discord webhooks. PCs on

@@ -247,6 +247,10 @@ type Webhook struct {
 type Settings struct {
 	OrgName   string `json:"org_name"`
 	ClientKey string `json:"client_key"`
+	// AutoCheckUpdates lets the server ask GitHub once a day whether there is
+	// a new release, so update.available can be announced. Off unless an
+	// administrator turns it on: otherwise Foghorn never calls out by itself.
+	AutoCheckUpdates bool `json:"auto_check_updates"`
 }
 
 type State struct {

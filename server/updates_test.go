@@ -264,10 +264,59 @@ func main() { fmt.Println("`+ver+`") }
 	}
 }
 
-func TestSelfUpdateOffInContainer(t *testing.T) {
+func TestSelfUpdateInContainer(t *testing.T) {
 	t.Setenv("FOGHORN_IN_CONTAINER", "1")
-	a := &App{}
-	if _, managed, reason := a.selfUpdate(); reason == "" || managed {
-		t.Fatalf("in a container: managed=%v reason=%q, want a reason and not managed", managed, reason)
+	st, err := openStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &App{store: st}
+	exe, managed, reason := a.selfUpdate()
+	if reason != "" || !managed || exe != containerProgram(st.dir) {
+		t.Fatalf("in a container: exe=%q managed=%v reason=%q, want the data volume's program", exe, managed, reason)
+	}
+}
+
+// TestContainerUpdate installs into an empty data volume, the way the first
+// "Update server" in Docker does, then checks the start-up hand-over picks
+// the newer program and leaves an older one alone.
+func TestContainerUpdate(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a small program")
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "next.go")
+	os.WriteFile(src, []byte("package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"2.0.0\") }\n"), 0o644)
+	built := filepath.Join(dir, "next.bin")
+	cmd := exec.Command("go", "build", "-o", built, src)
+	cmd.Env = append(os.Environ(), "GO111MODULE=off")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, b)
+	}
+	next, _ := os.ReadFile(built)
+
+	data := filepath.Join(dir, "data")
+	exe := containerProgram(data)
+	os.MkdirAll(filepath.Dir(exe), 0o750)
+	if err := installServerBinary(exe, next, "2.0.0"); err != nil {
+		t.Fatalf("first install into an empty volume: %v", err)
+	}
+
+	old := version
+	defer func() { version = old }()
+	version = "1.5.0"
+	if got := newerContainerProgram(data); got != exe {
+		t.Fatalf("1.5.0 should hand over to the volume's 2.0.0, got %q", got)
+	}
+	version = "2.0.0"
+	if got := newerContainerProgram(data); got != "" {
+		t.Fatalf("the same version must not hand over, got %q", got)
+	}
+	version = "3.0.0"
+	if got := newerContainerProgram(data); got != "" {
+		t.Fatalf("a newer image must not hand over to an older volume copy, got %q", got)
+	}
+	if got := newerContainerProgram(filepath.Join(dir, "empty")); got != "" {
+		t.Fatalf("no program in the volume: got %q", got)
 	}
 }

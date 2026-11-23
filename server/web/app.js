@@ -1182,7 +1182,7 @@
             h('label', { class: 'field' }, h('span', null, 'Name'), name),
             h('label', { class: 'field' }, h('span', null, 'Address Foghorn sends to'), url,
               h('small', null, 'For Discord, paste the channel’s webhook URL (Server Settings → Integrations → Webhooks → Copy Webhook URL). Foghorn posts readable messages there.')),
-            h('div', { class: 'field' }, h('span', null, 'Events'), h('div', { class: 'checklist wide' }, boxes), h('small', null, 'Tick none to receive every event.')), e2)], [
+            h('div', { class: 'field' }, h('span', null, 'Events'), h('div', { class: 'checklist wide' }, boxes), h('small', null, 'Tick none to receive every event except api.call, which is only sent when ticked.')), e2)], [
             h('button', { class: 'btn', onclick: function () { dlg.close(); } }, 'Cancel'),
             h('button', { class: 'btn primary', onclick: function () {
               var body = { name: name.value, url: url.value, events: chosen, enabled: w ? w.enabled : true };
@@ -1335,6 +1335,13 @@
           h('dt', null, 'Latest release'), h('dd', null, latest ? [h('a', { href: latest.url, target: '_blank', rel: 'noopener' }, latest.tag), ' – published ' + when(latest.published_at)] : 'Not checked yet'),
           h('dt', null, 'Last checked'), h('dd', null, u.checked_at && u.checked_at.slice(0, 4) !== '0001' ? when(u.checked_at) : 'never'),
           h('dt', null, 'Updates from'), h('dd', { class: 'mono' }, 'github.com/' + u.repo)));
+      var auto = h('input', { type: 'checkbox', checked: !!u.auto_check, onchange: function () {
+        auto.disabled = true;
+        api('PUT', '/api/updates/settings', { auto_check: auto.checked }).then(function (r) { draw(r); toast(r.auto_check ? 'This server will check GitHub once a day' : 'Daily check turned off'); })
+          .catch(function (e) { auto.disabled = false; auto.checked = !auto.checked; fail(e); });
+      } });
+      srv.appendChild(h('label', { class: 'check' }, auto, h('span', null, 'Check for new versions once a day',
+        h('small', null, 'Foghorn asks GitHub for the latest release and tells your webhooks (update.available) when there is a new one. Off by default, so the server never contacts anything by itself.'))));
       if (latest && latest.notes) srv.appendChild(h('details', { class: 'notes' }, h('summary', null, 'What’s new in ' + latest.tag), h('div', { class: 'release-notes' }, latest.notes)));
       if (newer) {
         if (u.server_update.possible) {
@@ -1342,7 +1349,9 @@
             confirmDialog('Update this server to ' + latest.version + '?', [
               h('p', null, 'Foghorn downloads ' + latest.tag + ' from GitHub, checks it against the release’s checksums and runs it once, then swaps it in.'),
               h('p', null, u.server_update.restarts_itself ? 'The server restarts, which takes about ten seconds. PCs reconnect by themselves; nothing is lost.' : 'This server is running in a window, so you will need to stop it and start it again afterwards.'),
-              h('p', { class: 'muted small' }, 'The current version is kept as ' + (u.server_update.program || 'the program') + '.old, so it can be put back by hand.')], 'Update server').then(function (y) {
+              u.server_update.container
+                ? h('p', { class: 'muted small' }, 'This server runs in a container, so the new version is saved in its data volume (' + u.server_update.program + ') and used from then on. The container needs a restart policy, such as restart: unless-stopped in docker-compose.yml, to come back by itself. Rebuilding the image with a newer version later takes over again.')
+                : h('p', { class: 'muted small' }, 'The current version is kept as ' + (u.server_update.program || 'the program') + '.old, so it can be put back by hand.')], 'Update server').then(function (y) {
               if (!y) return;
               go.disabled = true; go.textContent = 'Downloading…';
               api('POST', '/api/updates/server').then(function (r) {
