@@ -9,6 +9,7 @@ and removing the server. If you only want it running, do **Part 1** and stop.
 - [Part 4 — Looking after it](#part-4-looking-after-it) (backup, upgrade, move, remove, lost password)
 - [Appendix A — Installing on Linux](#appendix-a-installing-on-linux)
 - [Appendix B — Installing by hand, without the script](#appendix-b-installing-by-hand-without-the-script)
+- [Appendix C — Running in Docker](#appendix-c-running-in-docker)
 
 ---
 
@@ -16,7 +17,7 @@ and removing the server. If you only want it running, do **Part 1** and stop.
 
 | | |
 |---|---|
-| A machine that stays on | Windows Server 2016 or later, or Windows 10/11. Or a 64-bit Linux server with systemd — see [Appendix A](#appendix-a-installing-on-linux). A VM is fine. It does **not** need to be a domain controller and should not be one. |
+| A machine that stays on | Windows Server 2016 or later, or Windows 10/11. Or a 64-bit Linux server with systemd — see [Appendix A](#appendix-a-installing-on-linux). Or any machine running Docker — see [Appendix C](#appendix-c-running-in-docker). A VM is fine. It does **not** need to be a domain controller and should not be one. |
 | Resources | Tiny. About 40 MB of memory with 1,500 PCs connected. |
 | Network | Every PC that should receive alerts must be able to reach this machine on one TCP port (8080 unless you change it). |
 | A name for it | PCs will be told the server's address. A DNS name such as `foghorn01` or an alias like `foghorn.college.local` is better than an IP address, because you can move the server later without touching the PCs. |
@@ -243,9 +244,13 @@ From the Foghorn folder (copied or `git clone`d onto the server):
 # 1. A system account for the service to run as (no login, no home directory)
 sudo useradd --system --home-dir /var/lib/foghorn --shell /usr/sbin/nologin foghorn
 
-# 2. The program and the systemd unit
-sudo install -m 0755 dist/foghorn-server-linux-amd64 /usr/local/bin/foghorn-server
+# 2. The program (inside the data folder, so it can update itself) and the systemd unit
+sudo install -d -o foghorn -g foghorn -m 0750 /var/lib/foghorn /var/lib/foghorn/bin
+sudo install -o foghorn -g foghorn -m 0755 dist/foghorn-server-linux-amd64 /var/lib/foghorn/bin/foghorn-server
+sudo ln -sf /var/lib/foghorn/bin/foghorn-server /usr/local/bin/foghorn-server
 sudo install -m 0644 deploy/linux/foghorn.service /etc/systemd/system/foghorn.service
+#    RHEL family (SELinux) only - let systemd run a program from there:
+#    sudo semanage fcontext -a -t bin_t '/var/lib/foghorn/bin(/.*)?' && sudo restorecon -Rv /var/lib/foghorn/bin
 
 # 3. Start it now and at every boot
 sudo systemctl daemon-reload
@@ -265,15 +270,15 @@ What that did, so nothing is a mystery:
 | It did this | Why |
 |---|---|
 | Created the `foghorn` system account | The service never runs as root. |
-| Put the program in `/usr/local/bin/foghorn-server` | Standard place for software not managed by the package manager. |
-| systemd created `/var/lib/foghorn` (mode `0750`, owned by `foghorn`) | `StateDirectory=` in the unit. It holds password hashes and the client key. |
+| Put the program in `/var/lib/foghorn/bin/`, with a link at `/usr/local/bin/foghorn-server` | So **Settings → Updates → Update server** can replace it ([UPDATING.md](UPDATING.md)). The link keeps `foghorn-server` working at the command line. |
+| Made `/var/lib/foghorn` (mode `0750`, owned by `foghorn`) | It holds password hashes and the client key. |
 | Started the service with a hardened sandbox | The unit can write **only** to `/var/lib/foghorn`; the rest of the system is read-only to it and `/home` is invisible. It restarts itself if it ever crashes. |
 
 > **The service won't start and `systemctl status` shows `status=203/EXEC`?**
-> The binary is not executable or, on RHEL-family systems, has the wrong
-> SELinux label (usually because it was `mv`ed from a home directory rather
-> than `install`ed). Fix with `sudo chmod 0755 /usr/local/bin/foghorn-server`
-> and `sudo restorecon -v /usr/local/bin/foghorn-server`.
+> The binary is not executable or, on RHEL-family systems, SELinux will not
+> let systemd run it from `/var/lib`. Fix with
+> `sudo chmod 0755 /var/lib/foghorn/bin/foghorn-server`, then the `semanage`
+> and `restorecon` lines from step 2.
 
 ### A.2 Open the firewall
 
@@ -291,7 +296,7 @@ everything, e.g. `sudo ufw allow from 10.20.0.0/16 to any port 8080 proto tcp`.
 
 | Path | Contents |
 |---|---|
-| `/usr/local/bin/foghorn-server` | The program. |
+| `/var/lib/foghorn/bin/foghorn-server` | The program (`/usr/local/bin/foghorn-server` links to it). After an update, the one before is kept beside it as `foghorn-server.old`. |
 | `/etc/systemd/system/foghorn.service` | The service definition. |
 | `/var/lib/foghorn/config.json` | Port and HTTPS settings — same format as [Part 3](#part-3-settings-you-might-change). |
 | `/var/lib/foghorn/state.json`, `alerts.json`, `clients.json` | Accounts, alerts, computers — as in [Part 4](#where-everything-is). |
@@ -364,13 +369,19 @@ seconds is fine; do not lower it.
 | Version | `foghorn-server version` |
 | Back up | `sudo tar czf foghorn-backup-$(date +%F).tgz -C /var/lib foghorn` — safe while running |
 
-**Upgrading** — replace the binary and restart. Data and settings are untouched.
+**Upgrading** — from 1.2 on, use **Settings → Updates → Update server** in the
+console ([UPDATING.md](UPDATING.md)). To do it by hand, or to move an older
+install (program in `/usr/local/bin`) to the layout that can update itself:
 
 ```bash
-sudo install -m 0755 dist/foghorn-server-linux-amd64 /usr/local/bin/foghorn-server
+sudo install -d -o foghorn -g foghorn -m 0750 /var/lib/foghorn/bin
+sudo install -o foghorn -g foghorn -m 0755 dist/foghorn-server-linux-amd64 /var/lib/foghorn/bin/foghorn-server
+sudo ln -sf /var/lib/foghorn/bin/foghorn-server /usr/local/bin/foghorn-server
 sudo install -m 0644 deploy/linux/foghorn.service /etc/systemd/system/foghorn.service
 sudo systemctl daemon-reload && sudo systemctl restart foghorn
 ```
+
+Data and settings are untouched.
 
 **Someone is locked out** (the only administrator):
 
@@ -391,7 +402,7 @@ DNS name — as in [Moving to another machine](#moving-to-another-machine).
 
 ```bash
 sudo systemctl disable --now foghorn
-sudo rm /etc/systemd/system/foghorn.service /usr/local/bin/foghorn-server
+sudo rm /etc/systemd/system/foghorn.service /usr/local/bin/foghorn-server   # the program itself is in /var/lib/foghorn/bin
 sudo systemctl daemon-reload
 sudo rm -rf /var/lib/foghorn          # only if you also want to delete the data
 sudo userdel foghorn
@@ -415,3 +426,99 @@ To try it without installing anything, just run `foghorn-server.exe` in a
 console window; it prints the first-run details and stops with Ctrl+C. (Run
 that way it still keeps its data in `C:\ProgramData\Foghorn` unless you add
 `-data C:\some\folder`.)
+
+## Appendix C — Running in Docker
+
+The repository has a `Dockerfile` (in `server/`) and a `docker-compose.yml`
+(at the top). The image is about 25 MB, runs as an unprivileged user, and keeps
+everything in one volume mounted at `/data`.
+
+### C.1 Start it
+
+On any machine with Docker and Docker Compose, from the repository folder:
+
+```bash
+docker compose up -d --build
+docker compose logs foghorn          # the temporary admin password and client key
+```
+
+Browse to `http://<docker host>:8080/` and carry on from
+[Part 2 — First sign-in](#part-2-first-sign-in). Open TCP 8080 on the host's
+firewall so PCs can reach it, then point the clients at
+`http://<docker host>:8080/`.
+
+The first-run details are also in the volume, until you change the password:
+`docker compose exec foghorn cat /data/FIRST-RUN.txt`.
+
+### C.2 Settings
+
+| What | How |
+|---|---|
+| Port on the host | Set `FOGHORN_PORT` in a `.env` file next to `docker-compose.yml` (e.g. `FOGHORN_PORT=8081`), then `docker compose up -d`. Leave `listen` in `config.json` at `:8080`: that is the port *inside* the container. |
+| Time zone | `TZ` in `docker-compose.yml` (default `Europe/London`). **Schedules run on this clock**, so set it to yours. Containers otherwise run on UTC. |
+| `config.json` | It is at `/data/config.json`. Edit it with `docker compose exec foghorn vi /data/config.json`, then `docker compose restart foghorn`. |
+
+**HTTPS.** The simplest route is a reverse proxy (Caddy, Traefik, nginx) in
+front of the container that handles the certificate. Set
+`"trust_proxy_headers": true` in `config.json` so Foghorn sees the PCs' real
+addresses. Alternatively, mount the certificate into the container (for
+example add `- ./certs:/certs:ro` under `volumes:`), and set
+`"tls_cert": "/certs/foghorn.crt"` and `"tls_key": "/certs/foghorn.key"` in
+`config.json`. The files must be readable by user ID 10001.
+
+**PCs' IP addresses.** Foghorn records each PC's address, and targeting rules
+can use it (e.g. `10.20.0.0/16`). On a Linux Docker host with ports published
+as above, Foghorn sees the real addresses. **Docker Desktop (Windows and Mac)
+does not:** every PC appears to come from Docker's own address, so IP rules
+will not work there. For production use a Linux host, or put a reverse proxy
+in front and turn on `trust_proxy_headers`. If addresses still look wrong on
+Linux, use `network_mode: host` in place of `ports:`.
+
+### C.3 Looking after it
+
+| Task | Command |
+|---|---|
+| Is it running? | `docker compose ps` (shows `healthy` when it answers on `/healthz`) |
+| Log | `docker compose logs -f foghorn` |
+| Restart / stop / start | `docker compose restart foghorn` (or `stop`, `start`) |
+| Back up | `docker run --rm -v foghorn_foghorn-data:/data -v "$PWD":/backup alpine tar czf /backup/foghorn-backup.tgz -C /data .` (safe while running) |
+
+The volume is named after the project folder, so `foghorn_foghorn-data` if
+the folder is called `Foghorn`. `docker volume ls` shows the exact name.
+
+**Upgrading.** **Update server** in the console is switched off in a container,
+because a program replaced inside a container is lost when the container is
+recreated. Update the image instead. The data volume is kept:
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+Rolling out new **client** versions from **Updates** works the same as on any
+other server.
+
+**Someone is locked out.** The server has to be stopped for this:
+
+```bash
+docker compose stop foghorn
+docker compose run --rm foghorn reset-password admin
+docker compose start foghorn
+```
+
+**Moving in or out of Docker.** The data files are the same as on Windows and
+Linux. To move an existing install in, start the container once, stop it,
+then copy the *contents* of the old data folder into the volume:
+
+```bash
+docker compose stop foghorn
+docker run --rm -v foghorn_foghorn-data:/data -v /path/to/old-data:/old alpine \
+  sh -c 'cp -a /old/. /data/ && chown -R 10001:10001 /data'
+docker compose start foghorn
+```
+
+Fix any `tls_cert`/`tls_key` paths in `config.json`, and set `listen` back to
+`:8080`.
+
+**Removing it:** `docker compose down`, or `docker compose down -v` to delete
+the data as well.

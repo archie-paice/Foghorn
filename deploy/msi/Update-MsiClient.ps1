@@ -176,6 +176,74 @@ try {
     foreach ($t in $tables) { $db.Import($idt, "$t.idt") }
     $db.Import($idt, '_SummaryInformation.idt')
 
+    # ---- bring services and the upgrade schedule into line with the .wxs ----
+    # Same idea as the properties below: these are written down in
+    # FoghornClient.wxs and copied into the tables here, so the package matches
+    # what build-msi.sh would make from it.
+    function Invoke-Sql($sql) {
+        try { $v = $db.OpenView($sql); [void]$v.Execute($null); [void]$v.Close() }
+        catch { throw "MSI SQL failed: $sql ($($_.Exception.Message))" }
+    }
+    # Values go in as ? parameters: MSI SQL has no way to escape a quote, and no
+    # NULL literal (an empty column is simply left out).
+    function Insert($table, [System.Collections.Specialized.OrderedDictionary]$row) {
+        $cols = @(); $vals = @()
+        foreach ($k in $row.Keys) {
+            if ($null -eq $row[$k] -or "$($row[$k])" -eq '') { continue }
+            $cols += $k; $vals += , $row[$k]
+        }
+        $rec = $installer.CreateRecord($vals.Count)
+        for ($i = 0; $i -lt $vals.Count; $i++) {
+            if ($vals[$i] -is [int]) { $rec.IntegerData($i + 1) = $vals[$i] } else { $rec.StringData($i + 1) = [string]$vals[$i] }
+        }
+        $sql = "INSERT INTO $table ($($cols -join ', ')) VALUES ($((@('?') * $vals.Count) -join ', '))"
+        try { $v = $db.OpenView($sql); [void]$v.Execute($rec); [void]$v.Close() }
+        catch { throw "MSI SQL failed: $sql ($($_.Exception.Message))" }
+    }
+    Invoke-Sql "DELETE FROM ServiceInstall"
+    Invoke-Sql "DELETE FROM ServiceControl"
+    $types = @{ ownProcess = 16; shareProcess = 32 }
+    $starts = @{ auto = 2; demand = 3; disabled = 4 }
+    $errors = @{ ignore = 0; normal = 1; critical = 3 }
+    $services = 0
+    foreach ($si in $wxsXml.SelectNodes('//*[local-name()="ServiceInstall"]')) {
+        $err = $errors[$si.GetAttribute('ErrorControl')]
+        if ($si.GetAttribute('Vital') -eq 'yes') { $err += 32768 }   # msidbServiceInstallErrorControlVital
+        $account = $si.GetAttribute('Account')
+        if ($account -eq 'LocalSystem') { $account = '' }             # empty StartName = LocalSystem
+        Insert 'ServiceInstall' ([ordered]@{
+            ServiceInstall = $si.Id; Name = $si.Name; DisplayName = $si.GetAttribute('DisplayName')
+            ServiceType = [int]$types[$si.GetAttribute('Type')]; StartType = [int]$starts[$si.GetAttribute('Start')]
+            ErrorControl = [int]$err; StartName = $account; Arguments = $si.GetAttribute('Arguments')
+            Component_ = $si.ParentNode.Id; Description = $si.GetAttribute('Description') })
+        $services++
+    }
+    foreach ($sc in $wxsXml.SelectNodes('//*[local-name()="ServiceControl"]')) {
+        # msidbServiceControlEvent* bits: start 1/16, stop 2/32, delete 8/128 (install/uninstall)
+        $ev = 0
+        $bits = @{ Start = @(1, 16); Stop = @(2, 32); Remove = @(8, 128) }
+        foreach ($attr in $bits.Keys) {
+            $when = $sc.GetAttribute($attr)
+            if ($when -eq 'install' -or $when -eq 'both') { $ev += $bits[$attr][0] }
+            if ($when -eq 'uninstall' -or $when -eq 'both') { $ev += $bits[$attr][1] }
+        }
+        $wait = 1
+        if ($sc.GetAttribute('Wait') -eq 'no') { $wait = 0 }
+        Insert 'ServiceControl' ([ordered]@{ ServiceControl = $sc.Id; Name = $sc.Name; Event = [int]$ev; Wait = [int]$wait; Component_ = $sc.ParentNode.Id })
+    }
+    # The standard places for the service actions in the execute sequence.
+    $actions = @{ StopServices = 1900; DeleteServices = 2000; InstallServices = 5800; StartServices = 5900 }
+    foreach ($act in $actions.Keys) {
+        Invoke-Sql "DELETE FROM InstallExecuteSequence WHERE Action = '$act'"
+        if ($services -gt 0) { Invoke-Sql "INSERT INTO InstallExecuteSequence (Action, Condition, Sequence) VALUES ('$act', 'VersionNT', $($actions[$act]))" }
+    }
+    # MajorUpgrade Schedule: where RemoveExistingProducts runs.
+    $reqSeq = @{ afterInstallValidate = 1401; afterInstallInitialize = 1501; afterInstallExecute = 6550; afterInstallFinalize = 6700 }
+    $schedule = $wxsXml.SelectSingleNode('//*[local-name()="MajorUpgrade"]').Schedule
+    if (-not $schedule) { $schedule = 'afterInstallValidate' }
+    Invoke-Sql "UPDATE InstallExecuteSequence SET Sequence = $($reqSeq[$schedule]) WHERE Action = 'RemoveExistingProducts'"
+    Write-Host "Services: $services from FoghornClient.wxs; old versions removed $schedule"
+
     # ---- put the cabinet in and correct the recorded size -------------------
     # _Streams will not take a stream as a query parameter, so build the row
     # and insert it. 1 = msiViewModifyInsert.
@@ -283,6 +351,13 @@ $regNames = @(foreach ($r in $regRows) { $r[0] })
 foreach ($v in 'ServerUrl', 'ClientKey', 'UseSystemProxy') {
     Assert ($regNames -contains $v) "registry value $v is present"
 }
+$svc = Get-Rows $vdb "SELECT Name, Arguments, Component_ FROM ServiceInstall" 3
+Assert ($svc.Count -eq 1 -and $svc[0][0] -eq 'FoghornUpdater' -and $svc[0][1] -eq '--service' -and $svc[0][2] -eq 'ClientExe') `
+       'the Foghorn Updater service is installed with the client'
+$seq = @{}
+foreach ($r in (Get-Rows $vdb "SELECT Action, Sequence FROM InstallExecuteSequence" 2)) { $seq[$r[0]] = [int]$r[1] }
+Assert ($seq['InstallServices'] -and $seq['StartServices'] -and $seq['StopServices'] -and $seq['DeleteServices']) 'service actions are in the install sequence'
+Assert ($seq['RemoveExistingProducts'] -gt $seq['InstallInitialize']) 'an upgrade that fails rolls back to the old version (RemoveExistingProducts after InstallInitialize)'
 Assert ((Get-Rows $vdb "SELECT FileSize FROM File WHERE File = '$fileKey'" 1)[0][0] -eq "$newSize") `
        "File table records $newSize bytes"
 Assert ($version -eq $wxsVersion) "ProductVersion is $wxsVersion, matching FoghornClient.wxs"

@@ -222,7 +222,8 @@
     var route = (location.hash || '#/send').slice(2).split('/');
     var views = { send: sendView, alerts: route[1] ? alertDetailView : alertsView, computers: computersView,
       groups: groupsView, settings: isAdmin() ? settingsView : null, help: helpView, account: accountView,
-      lock: canLock() ? lockView : null, schedules: schedulesView, sounds: soundsView, api: apiView };
+      lock: canLock() ? lockView : null, schedules: schedulesView, sounds: soundsView, api: apiView,
+      updates: isAdmin() ? updatesView : null };
     var view = views[route[0]] || sendView;
     var main = h('main', { class: 'main' });
     app.appendChild(h('div', { class: 'shell' }, sidebar(route[0] || 'send'), main));
@@ -239,7 +240,7 @@
       h('nav', { class: 'nav', 'aria-label': 'Main' },
         link('send', 'Send an alert'), canLock() ? link('lock', 'Lock screens') : null, link('alerts', 'Sent alerts'),
         link('schedules', 'Scheduled'), link('computers', 'Computers'), link('groups', 'Groups'), link('sounds', 'Sounds'),
-        isAdmin() ? link('settings', 'Settings') : null, link('api', 'API'), link('help', 'Help')),
+        isAdmin() ? link('updates', 'Updates') : null, isAdmin() ? link('settings', 'Settings') : null, link('api', 'API'), link('help', 'Help')),
       h('div', { class: 'side-foot' },
         h('div', { class: 'credit' }, 'Built by ', h('a', { href: 'mailto:hello@archiepaice.com' }, 'Archie Paice')),
         h('div', { class: 'who' }, S.me.display_name || S.me.username),
@@ -1289,6 +1290,146 @@
         });
       });
     }).catch(function () { clear(ref).appendChild(h('p', { class: 'notice warn' }, 'Could not load the API description.')); });
+  }
+
+  // ---------- updates ----------
+  var rolloutDraft = { mode: 'groups', group_ids: [], field: 'hostname', patterns: '' };
+  function updatesView(main) {
+    main.appendChild(h('div', { class: 'page-head' }, h('div', null, h('h1', null, 'Updates'),
+      h('p', null, 'Update this server and the PCs to the latest Foghorn release. Updates come only from the project’s GitHub releases, checked against their published checksums.'))));
+    var box = h('div'); main.appendChild(box);
+    var busy = false;
+
+    function waitForRestart(target) {
+      var started = Date.now();
+      var note = h('p', { class: 'notice' }, 'The server is restarting to run ' + target + '… this page reloads when it is back.');
+      clear(box).appendChild(note);
+      (function poll() {
+        fetch('/healthz', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (j) {
+          if (j.version === target) { toast('Server updated to ' + target); setTimeout(function () { location.reload(); }, 600); return; }
+          throw new Error('not yet');
+        }).catch(function () {
+          if (Date.now() - started > 120000) { note.className = 'notice warn'; note.textContent = 'The server has not come back after two minutes. Check the service on the server; the previous version is kept beside it as foghorn-server.old.'; return; }
+          setTimeout(poll, 2000);
+        });
+      })();
+    }
+
+    function draw(u) {
+      clear(box);
+      var latest = u.latest, newer = latest && cmpVersion(latest.version, u.server_version) > 0;
+
+      // --- this server ---
+      var checkBtn = h('button', { class: 'btn', onclick: function () {
+        checkBtn.disabled = true; checkBtn.textContent = 'Checking GitHub…';
+        api('POST', '/api/updates/check').then(function (r) { draw(r); toast(r.latest && cmpVersion(r.latest.version, r.server_version) > 0 ? 'Foghorn ' + r.latest.version + ' is available' : 'This server is up to date'); })
+          .catch(function (e) { checkBtn.disabled = false; checkBtn.textContent = 'Check for updates'; fail(e); });
+      } }, 'Check for updates');
+      var srv = h('div', { class: 'panel stack' }, h('div', { class: 'row' }, h('h2', null, 'This server'), h('span', { class: 'spacer' }), checkBtn),
+        h('dl', { class: 'dl' },
+          h('dt', null, 'Running'), h('dd', null, u.server_version),
+          h('dt', null, 'Latest release'), h('dd', null, latest ? [h('a', { href: latest.url, target: '_blank', rel: 'noopener' }, latest.tag), ' – published ' + when(latest.published_at)] : 'Not checked yet'),
+          h('dt', null, 'Last checked'), h('dd', null, u.checked_at && u.checked_at.slice(0, 4) !== '0001' ? when(u.checked_at) : 'never'),
+          h('dt', null, 'Updates from'), h('dd', { class: 'mono' }, 'github.com/' + u.repo)));
+      if (latest && latest.notes) srv.appendChild(h('details', { class: 'notes' }, h('summary', null, 'What’s new in ' + latest.tag), h('div', { class: 'release-notes' }, latest.notes)));
+      if (newer) {
+        if (u.server_update.possible) {
+          var go = h('button', { class: 'btn primary', onclick: function () {
+            confirmDialog('Update this server to ' + latest.version + '?', [
+              h('p', null, 'Foghorn downloads ' + latest.tag + ' from GitHub, checks it against the release’s checksums and runs it once, then swaps it in.'),
+              h('p', null, u.server_update.restarts_itself ? 'The server restarts, which takes about ten seconds. PCs reconnect by themselves; nothing is lost.' : 'This server is running in a window, so you will need to stop it and start it again afterwards.'),
+              h('p', { class: 'muted small' }, 'The current version is kept as ' + (u.server_update.program || 'the program') + '.old, so it can be put back by hand.')], 'Update server').then(function (y) {
+              if (!y) return;
+              go.disabled = true; go.textContent = 'Downloading…';
+              api('POST', '/api/updates/server').then(function (r) {
+                if (r.restarting) waitForRestart(r.version);
+                else { toast(r.message); load(); }
+              }).catch(function (e) { go.disabled = false; go.textContent = 'Update server to ' + latest.version; fail(e); });
+            });
+          } }, 'Update server to ' + latest.version);
+          srv.appendChild(h('div', null, go));
+        } else {
+          srv.appendChild(h('p', { class: 'notice warn' }, 'Foghorn ' + latest.version + ' is available, but this server cannot update itself: ' + u.server_update.reason));
+        }
+      } else if (latest) {
+        srv.appendChild(h('p', { class: 'ok' }, 'This server is up to date.'));
+      }
+      box.appendChild(srv);
+
+      // --- the PCs ---
+      var pcs = h('div', { class: 'panel stack' }, h('h2', null, 'PCs'));
+      if (u.versions.length) {
+        pcs.appendChild(h('div', { class: 'versions' }, u.versions.map(function (v) {
+          var legacy = / \(no updater\)$/.test(v.version);
+          return h('span', { class: 'chip ver' + (legacy ? ' legacy' : '') }, h('b', null, v.version.replace(' (no updater)', '')), ' ', plural(v.pcs, 'PC', 'PCs'), legacy ? h('small', null, ' no updater') : null);
+        })));
+      }
+      if (u.legacy_pcs) pcs.appendChild(h('p', { class: 'notice' }, plural(u.legacy_pcs, 'PC has', 'PCs have'),
+        ' a client from before 1.2, which has no updater. Deploy the 1.2 MSI to them once, the usual way (Group Policy, Intune…); from then on they update from here.'));
+      if (!u.https) pcs.appendChild(h('p', { class: 'muted small' }, 'PCs download updates from GitHub. PCs that cannot reach GitHub can use this server’s copy instead, but only over HTTPS, and this server is on plain HTTP.'));
+
+      var ro = u.rollout, p = u.progress;
+      if (ro) {
+        var pct = p.target ? Math.round(100 * p.done / p.target) : 0;
+        var bar = h('span', { class: 'bar' }); bar.style.width = pct + '%';
+        pcs.appendChild(h('div', { class: 'rollout' + (ro.paused ? ' paused' : '') },
+          h('div', { class: 'row' }, h('b', null, (ro.paused ? 'Paused: ' : 'Rolling out ') + ro.version + ' to ' + ro.target_summary), h('span', { class: 'spacer' }),
+            h('button', { class: 'btn sm', onclick: function () {
+              api('PUT', '/api/updates/rollout', { version: ro.version, target: ro.target, paused: !ro.paused }).then(load).catch(fail);
+            } }, ro.paused ? 'Resume' : 'Pause'), ' ',
+            h('button', { class: 'btn sm danger', onclick: function () {
+              confirmDialog('Stop this rollout?', h('p', null, 'PCs already updated stay updated. The rest stay where they are.'), 'Stop rollout', true)
+                .then(function (y) { if (y) api('DELETE', '/api/updates/rollout').then(load).catch(fail); });
+            } }, 'Stop')),
+          h('div', { class: 'track wide' }, bar),
+          h('div', { class: 'muted small' }, p.done + ' of ' + plural(p.target, 'PC', 'PCs') + ' updated' + (p.pending ? ', ' + p.pending + ' to go' : '') + (p.failed ? ', ' + p.failed + ' failed' : '') +
+            '. Started by ' + ro.started_by + ' ' + when(ro.started_at) + '. PCs check about every 20 minutes, and when they start up.')));
+      }
+      if (latest && (!ro || ro.version !== latest.version)) {
+        var aud = audiencePicker(rolloutDraft, function () {});
+        var start = h('button', { class: 'btn primary', onclick: function () {
+          var target = buildTarget(rolloutDraft);
+          if (!target.all && !target.group_ids.length && !target.rules.length) { toast('Choose which PCs to update.', true); return; }
+          confirmDialog('Update PCs to ' + latest.version + '?', [
+            h('p', null, 'Each chosen PC downloads the ' + latest.tag + ' MSI from GitHub and installs it within about 20 minutes. Foghorn on that PC closes for a few seconds and comes straight back.'),
+            h('p', { class: 'muted small' }, 'Tip: start with a test group of a few PCs, check they are fine, then roll out to everyone.')], 'Start rollout').then(function (y) {
+            if (y) api('PUT', '/api/updates/rollout', { version: latest.version, target: target }).then(function () { toast('Rollout started'); load(); }).catch(fail);
+          });
+        } }, 'Roll out ' + latest.version);
+        pcs.appendChild(h('div', { class: 'stack' }, h('span', { class: 'legend' }, 'Roll out ' + latest.tag + ' to'), aud,
+          h('small', { class: 'hint' }, 'Updates go to whole computers, so choose by group, computer name, OU or IP address; usernames and AD user groups do not apply.'), h('div', null, start)));
+      } else if (!latest) {
+        pcs.appendChild(h('p', { class: 'muted' }, 'Check for updates to see whether there is a release to roll out.'));
+      }
+
+      if (u.machines.length) {
+        var rows = u.machines.slice().sort(function (a, b) { return (b.state === 'failed') - (a.state === 'failed'); });
+        pcs.appendChild(h('details', { class: 'machines', open: !!(p && p.failed) },
+          h('summary', null, plural(u.machines.length, 'PC', 'PCs') + ' with the updater'),
+          h('div', { class: 'tablewrap' }, h('table', null,
+            h('thead', null, h('tr', null, h('th', null, 'Computer'), h('th', null, 'Version'), h('th', null, 'Updater'), h('th', null, 'Last checked'))),
+            h('tbody', null, rows.slice(0, 2000).map(function (m) {
+              var current = latest && cmpVersion(m.version, ro ? ro.version : latest.version) >= 0;
+              var st = current ? 'Up to date' : ({ idle: ro ? 'Waiting' : 'Idle', downloading: 'Downloading', installing: 'Installing', failed: 'Failed' }[m.state] || m.state);
+              return h('tr', null, h('td', null, m.hostname), h('td', null, m.version),
+                h('td', null, h('span', { class: 'pill ' + (current ? 'active' : m.state === 'failed' ? 'recalled' : m.state === 'idle' ? 'finished' : 'active') }, st),
+                  m.detail ? h('div', { class: 'small ' + (m.state === 'failed' ? 'error' : 'muted') }, m.detail) : null),
+                h('td', { class: 'nowrap' }, when(m.last_seen)));
+            }))))));
+      }
+      box.appendChild(pcs);
+      busy = false;
+    }
+    function load() { if (busy) return; busy = true; api('GET', '/api/updates').then(draw).catch(function (e) { busy = false; fail(e); }); }
+    load(); every(10000, load);
+  }
+  function cmpVersion(a, b) {
+    var x = String(a).split('.'), y = String(b).split('.');
+    for (var i = 0; i < Math.max(x.length, y.length); i++) {
+      var p = +x[i] || 0, q = +y[i] || 0;
+      if (p !== q) return p > q ? 1 : -1;
+    }
+    return 0;
   }
 
   // ---------- help ----------

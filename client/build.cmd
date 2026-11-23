@@ -23,7 +23,7 @@ if not exist "%CSC%" (
 )
 
 "%CSC%" /nologo /target:winexe /platform:anycpu /optimize+ /out:"%OUT%" /win32icon:"%~dp0foghorn.ico" ^
-  /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll ^
+  /r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll /r:System.ServiceProcess.dll ^
   "%~dp0src\*.cs"
 if errorlevel 1 exit /b 1
 echo Built %OUT%

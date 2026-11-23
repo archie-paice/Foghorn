@@ -14,7 +14,7 @@ Active Directory.
 
 | Part | Runs on |
 |---|---|
-| **Server** + web console | Windows Server 2016+ / Windows 10–11, **or** 64-bit Linux with systemd |
+| **Server** + web console | Windows Server 2016+ / Windows 10–11, **or** 64-bit Linux with systemd, **or** Docker |
 | **Desktop client** | Windows 10 and 11 (the PCs that receive alerts) |
 | **Web console** | Any modern browser, on any device |
 
@@ -36,10 +36,11 @@ Active Directory.
 - **Scheduled alerts**: once, or every week ("Save your work" at 15:50 every weekday).
 - **Templates** for wording and design you reuse. The audience is never saved, so it's always a deliberate choice.
 - **Roles.** *Administrators* manage everything. *Senders* can send alerts, optionally limited to their own groups (a tutor to their own classroom, say), and can be allowed to lock screens. Every alert is signed with the sender's name.
+- **Updates from the console.** Check GitHub for a new release, update the server in one click, and roll the new client out to a test group first and then everyone, with live progress. PCs fetch only genuine GitHub releases ([how](docs/UPDATING.md)).
 - **An API for integrations.** Scoped tokens (send / lock / read), idempotent sends, signed **webhooks** for replies and locks, and an OpenAPI description. There's a [Laravel guide](docs/INTEGRATIONS-LARAVEL.md) with drop-in code.
 - **Small.** About 40 MB of memory on the server with 1,500 PCs connected. The client is a 64 KB `.exe` and needs nothing installed on Windows 10 or 11.
 - **Standard deployment.** Roll the client out with an MSI + transform through Group Policy Software Installation, Intune, SCCM, PDQ, or a start-up script.
-- **No internet needed.** Console uses system fonts only. No CDN, no telemetry, no external calls.
+- **No internet needed.** Console uses system fonts only. No CDN, no telemetry, and no calls out unless an administrator checks for updates.
 - **HTTPS** with your own certificate. Cross-site request forgery and login lock-out are built in. Passwords are PBKDF2-SHA256 (210,000 rounds).
 
 ## Quick start (about 10 minutes)
@@ -93,7 +94,9 @@ from this folder:
 
 ```bash
 sudo useradd --system --home-dir /var/lib/foghorn --shell /usr/sbin/nologin foghorn
-sudo install -m 0755 dist/foghorn-server-linux-amd64 /usr/local/bin/foghorn-server
+sudo install -d -o foghorn -g foghorn -m 0750 /var/lib/foghorn /var/lib/foghorn/bin
+sudo install -o foghorn -g foghorn -m 0755 dist/foghorn-server-linux-amd64 /var/lib/foghorn/bin/foghorn-server
+sudo ln -sf /var/lib/foghorn/bin/foghorn-server /usr/local/bin/foghorn-server
 sudo install -m 0644 deploy/linux/foghorn.service /etc/systemd/system/foghorn.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now foghorn
@@ -112,6 +115,20 @@ Then continue from step 2 of the quick start. Good to know:
 HTTPS, reverse proxies, upgrading, password resets, moving between Windows and
 Linux, and removal are all covered in
 **[docs/INSTALL-SERVER.md — Appendix A](docs/INSTALL-SERVER.md#appendix-a-installing-on-linux)**.
+
+## Running the server in Docker
+
+```bash
+docker compose up -d --build
+docker compose logs foghorn      # temporary admin password + client key
+```
+
+Then browse to `http://<docker host>:8080/` and continue from step 2 of the
+quick start. Data lives in the `foghorn-data` volume. Set `TZ` in
+`docker-compose.yml` to your time zone, because schedules run on that clock.
+You update by rebuilding the image, not with **Update server**. Ports, HTTPS,
+backups, password resets and IP-address caveats are in
+**[docs/INSTALL-SERVER.md — Appendix C](docs/INSTALL-SERVER.md#appendix-c-running-in-docker)**.
 
 ## How it fits together
 

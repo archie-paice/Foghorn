@@ -106,6 +106,20 @@ machine. With `-mod=vendor` Go never looks for that folder. If you would rather
 tidy it up on a machine with internet access: delete the `replace` line and the
 `vendor` folder, then run `go mod tidy`.
 
+### The Docker image
+
+`server/Dockerfile` builds the server inside a `golang:1.22-alpine` container
+(again with `-mod=vendor`, so it needs no internet access for modules) and
+copies the result into a small Alpine image. From the repository root:
+
+```bash
+docker compose build               # or: docker build -t foghorn-server server
+```
+
+The image sets `FOGHORN_IN_CONTAINER=1`. That switches off **Update server** in
+the console, and makes `reset-password` give `docker compose` commands. Nothing
+in `dist/` is used or changed by the image build.
+
 The web console is plain HTML, CSS and JavaScript in `server\web\` — no build
 step, no npm. It is embedded into the `.exe` when you build, so rebuild the
 server after changing it.

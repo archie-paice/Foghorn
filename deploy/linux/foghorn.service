@@ -8,7 +8,10 @@ Wants=network-online.target
 [Service]
 User=foghorn
 Group=foghorn
-ExecStart=/usr/local/bin/foghorn-server run -data /var/lib/foghorn
+# The program lives inside the data folder so the console's "Update server"
+# can replace it (docs/UPDATING.md). It then exits with status 3 and
+# Restart=on-failure starts the new version.
+ExecStart=/var/lib/foghorn/bin/foghorn-server run -data /var/lib/foghorn
 Restart=on-failure
 RestartSec=5
 # hardening

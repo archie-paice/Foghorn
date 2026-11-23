@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-var version = "1.1.0"
+var version = "1.2.0"
 
 const firstRunFile = "FIRST-RUN.txt"
 
@@ -39,6 +39,9 @@ type Config struct {
 	TLSCert           string `json:"tls_cert"`
 	TLSKey            string `json:"tls_key"`
 	TrustProxyHeaders bool   `json:"trust_proxy_headers"`
+	// UpdateRepo is the GitHub "owner/name" updates come from. Only for forks;
+	// PCs have the repository built in and ignore this.
+	UpdateRepo string `json:"update_repo,omitempty"`
 }
 
 type App struct {
@@ -265,6 +268,9 @@ func resetPassword(dir, username string) error {
 
 // serviceHint is the command that stops or starts the server on this OS.
 func serviceHint(verb string) string {
+	if os.Getenv("FOGHORN_IN_CONTAINER") != "" {
+		return "docker compose " + verb + " foghorn"
+	}
 	if runtime.GOOS == "windows" {
 		return "foghorn-server service " + verb
 	}
@@ -277,6 +283,8 @@ func (a *App) routes() http.Handler {
 	// desktop clients
 	mux.HandleFunc("POST /api/client/poll", a.handlePoll)
 	mux.HandleFunc("GET /api/client/sounds/{id}", a.handleClientSound)
+	mux.HandleFunc("POST /api/client/updater", a.handleUpdaterCheck)
+	mux.HandleFunc("GET /api/client/updater/msi", a.handleUpdaterMSI)
 
 	// sign in / own account
 	mux.HandleFunc("POST /api/login", a.handleLogin)
@@ -338,6 +346,11 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("PUT /api/webhooks/{id}", a.guard("admin", "", a.handleSaveWebhook))
 	mux.HandleFunc("DELETE /api/webhooks/{id}", a.guard("admin", "", a.handleDeleteWebhook))
 	mux.HandleFunc("POST /api/webhooks/{id}/test", a.guard("admin", "", a.handleTestWebhook))
+	mux.HandleFunc("GET /api/updates", a.guard("admin", "", a.handleUpdateStatus))
+	mux.HandleFunc("POST /api/updates/check", a.guard("admin", "", a.handleCheckUpdates))
+	mux.HandleFunc("POST /api/updates/server", a.guard("admin", "", a.handleUpdateServer))
+	mux.HandleFunc("PUT /api/updates/rollout", a.guard("admin", "", a.handleStartRollout))
+	mux.HandleFunc("DELETE /api/updates/rollout", a.guard("admin", "", a.handleStopRollout))
 
 	// The API description, for code generators and API tools. No sign-in needed:
 	// it describes the API, it does not grant any access to it.

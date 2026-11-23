@@ -29,6 +29,8 @@ jobs:
       CLIENT_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the upgrade test installs older MSIs from history
 
       # runner.temp cannot be used in job-level env: the runner context does
       # not exist when that is evaluated, and GitHub rejects the whole workflow
@@ -77,10 +79,15 @@ jobs:
           Invoke-Msi @('/i', "`"$env:MSI`"") "$env:RUNNER_TEMP\plain-install.log"
           Assert (Test-Path $Exe) 'client installed to Program Files'
           Assert ((Get-ItemProperty $Run).FoghornClient -eq "`"$Exe`"") 'Run key starts the client at logon'
+          $svc = Get-CimInstance Win32_Service -Filter "Name='FoghornUpdater'"
+          Assert ($svc -and $svc.State -eq 'Running') "updater service running (state: $($svc.State))"
+          Assert ($svc.StartName -eq 'LocalSystem' -and $svc.StartMode -eq 'Auto') 'updater runs as LocalSystem, starts automatically'
+          Assert ($svc.PathName -eq "`"$Exe`" --service") "updater command line: $($svc.PathName)"
           # Must not write empty settings that would mask Group Policy.
           Assert (-not (Get-ItemProperty $Keys -ErrorAction SilentlyContinue).ServerUrl) 'no ServerUrl written without a transform'
           Invoke-Msi @('/x', "`"$env:MSI`"") "$env:RUNNER_TEMP\plain-uninstall.log"
           Assert (-not (Test-Path $Exe)) 'uninstall removed the client'
+          Assert (-not (Get-Service FoghornUpdater -ErrorAction SilentlyContinue)) 'uninstall removed the updater service'
 
       - name: "3. Install WITH the transform (MSI + MST route)"
         run: |
@@ -115,6 +122,29 @@ jobs:
           Assert ($s.ServerUrl -eq $env:SERVER_URL) 'ServerUrl from command line'
           Assert ($s.UseSystemProxy -ne '1') 'UseSystemProxy off when not asked for'
           Invoke-Msi @('/x', "`"$env:MSI`"") "$env:RUNNER_TEMP\cli-uninstall.log"
+
+      - name: "7. Upgrade from earlier releases, the way the updater does"
+        run: |
+          $ErrorActionPreference = 'Stop'; . "$env:RUNNER_TEMP\helpers.ps1"
+          # 53daa83 = 1.0.2 (installs to Foghorn\); aa59cc1 = 1.0.3, whose MSI put
+          # the client in "#_PatchCache\" - PCs that took it must come out right.
+          foreach ($ref in '53daa83', 'aa59cc1') {
+            $old = "$env:RUNNER_TEMP\old-$ref.msi"
+            cmd /c "git show ${ref}:dist/FoghornClient.msi > `"$old`""
+            Invoke-Msi @('/i', "`"$old`"", "SERVERURL=$env:SERVER_URL", "CLIENTKEY=$env:CLIENT_KEY") "$env:RUNNER_TEMP\old-$ref.log"
+            # The updater passes the installer's settings on, as here.
+            Invoke-Msi @('/i', "`"$env:MSI`"", "SERVERURL=$env:SERVER_URL", "CLIENTKEY=$env:CLIENT_KEY") "$env:RUNNER_TEMP\upgrade-$ref.log"
+            $want = ([xml](Get-Content .\deploy\msi\FoghornClient.wxs -Raw)).Wix.Product.Version
+            $ver = (Get-Item $Exe).VersionInfo.FileVersion
+            Assert ($ver -like "$want*") "${ref}: upgraded client is $want (file says $ver)"
+            Assert (-not (Test-Path 'C:\Program Files\#_PatchCache')) "${ref}: no client left in #_PatchCache"
+            Assert ((Get-ItemProperty $Keys).ServerUrl -eq $env:SERVER_URL) "${ref}: settings carried over"
+            Assert ((Get-ItemProperty $Run).FoghornClient -eq "`"$Exe`"") "${ref}: Run key points at the new client"
+            Assert ((Get-Service FoghornUpdater).Status -eq 'Running') "${ref}: updater service running after the upgrade"
+            $products = @(Get-CimInstance Win32_Product -Filter "Name='Foghorn Client'")
+            Assert ($products.Count -eq 1) "${ref}: exactly one Foghorn Client installed ($($products.Version -join ', '))"
+            Invoke-Msi @('/x', "`"$env:MSI`"") "$env:RUNNER_TEMP\upgrade-$ref-uninstall.log"
+          }
 
       - name: Upload msiexec logs
         if: always()

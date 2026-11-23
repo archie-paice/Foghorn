@@ -2,6 +2,61 @@
 
 All notable changes to Foghorn are listed here, newest first.
 
+## 1.2.0
+
+Update the server and the PCs from the web console. **Deploy this version's
+MSI to your PCs once, the usual way.** From then on, new versions can be
+rolled out from **Updates** in the console. See [docs/UPDATING.md](docs/UPDATING.md).
+
+### Added
+- **Updates page** (administrators). **Check for updates** asks GitHub for the
+  latest release and shows what's new. Foghorn still makes no calls out on
+  its own.
+- **Update the server in one click.** It downloads the release for its OS,
+  checks it against the release's `SHA256SUMS.txt`, runs it once to confirm
+  it starts and reports the right version, then swaps it in and restarts. The
+  previous program is kept as `.old`. Works for the Windows service and for
+  systemd, using the new Linux layout below.
+- **Roll out a client version to PCs**: to a test group first, then everyone.
+  You can pause, resume or stop, and there's live progress with per-PC state
+  and the reason for any failure.
+- **Foghorn Updater service**, installed by the MSI: `FoghornClient.exe
+  --service` running as LocalSystem. It checks with the server about every
+  20 minutes and at start-up. It downloads the approved version's MSI from
+  GitHub, from a repository built into the client, and checks it against the
+  release checksum. It installs it silently, keeps the installer's settings,
+  and starts the client again in every signed-in session.
+  - Falls back to the server's copy of the MSI only when the server is on HTTPS.
+  - Never downgrades. Retries a failed version after six hours. Logs under
+    SYSTEM's profile.
+  - `FoghornClient.exe --update-now` (as administrator) makes it check
+    straight away, and `--status` shows whether it is running.
+- **Docker.** `server/Dockerfile` and a `docker-compose.yml` run the server
+  in a small Alpine container: a non-root user, data in a `/data` volume, and
+  a health check on `/healthz`. In a container, **Update server** explains
+  that you update by rebuilding the image, and `reset-password` gives the
+  `docker compose` commands. See INSTALL-SERVER.md → Appendix C.
+- **Release workflow.** Pushing a tag `vX.Y.Z` publishes `dist/` as a GitHub
+  release, after checking that every version number agrees and the checksums
+  match.
+- **Updater end-to-end test in CI.** It builds a fake 99.0.0 client, installs
+  1.2.0 on a clean Windows machine, and checks the updater upgrades it through
+  a real HTTPS Foghorn server.
+
+### Changed
+- **Upgrades roll back if they fail.** The MSI now removes the old version
+  inside the same transaction as it installs the new one
+  (`MajorUpgrade Schedule="afterInstallInitialize"`). An unattended update
+  that fails leaves the PC on its old version, never with no client.
+- **Linux:** the program now lives in `/var/lib/foghorn/bin/`, with a link at
+  `/usr/local/bin/foghorn-server`, so the server can update itself. Existing
+  installs move it once; see INSTALL-SERVER.md → Upgrading.
+- `Update-MsiClient.ps1` copies the service and the upgrade schedule from
+  `FoghornClient.wxs` into the MSI, and checks them. It now inserts values as
+  query parameters, because MSI SQL cannot escape a quote.
+- The MSI deploy test also checks the updater service, and upgrades from
+  1.0.2 and from the broken 1.0.3 MSI.
+
 ## 1.1.0
 
 New features for teachers and for anyone connecting Foghorn to other systems.

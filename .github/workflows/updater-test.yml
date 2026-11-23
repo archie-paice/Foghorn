@@ -1,0 +1,154 @@
+# End-to-end test of the client updater, on a real Windows machine.
+#
+# The updater runs as SYSTEM on every PC and replaces the client by itself, so
+# it is tested the way it will run:
+#
+#   1. Build a future client, version 99.0.0, from this source, and its MSI.
+#   2. Start a real Foghorn server on HTTPS (certificate trusted by the
+#      machine) with a rollout of 99.0.0 and its copy of that MSI.
+#   3. Install the MSI in dist/ pointing at that server, and tell its updater
+#      to check now.
+#   4. There is no v99.0.0 on GitHub, so the updater must fall back to the
+#      server's HTTPS copy, check the hash, install it, come back as 99.0.0,
+#      report that to the server, and keep its settings.
+name: Updater end-to-end test
+
+on:
+  pull_request:
+    paths:
+      - 'client/**'
+      - 'server/**'
+      - 'dist/**'
+      - 'deploy/msi/**'
+      - '.github/workflows/updater-test.yml'
+  workflow_dispatch:
+
+jobs:
+  update-a-pc:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build a 99.0.0 client and MSI from this source
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $next = "$env:RUNNER_TEMP\next"
+          New-Item -ItemType Directory -Force $next | Out-Null
+          Copy-Item -Recurse client, deploy, dist $next
+          $p = "$next\client\src\Program.cs"
+          (Get-Content $p -Raw) -replace 'Version = "[0-9.]+"', 'Version = "99.0.0"' -replace 'Version\("[0-9.]+"\)', 'Version("99.0.0.0")' | Set-Content $p -Encoding UTF8
+          $w = "$next\deploy\msi\FoghornClient.wxs"
+          (Get-Content $w -Raw) -replace '(<Product [^>]*Version=")[0-9.]+', '${1}99.0.0' | Set-Content $w -Encoding UTF8
+          & "$next\client\build.cmd" "$next\dist\FoghornClient.exe"
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+          & "$next\deploy\msi\Update-MsiClient.ps1" -MsiPath "$next\dist\FoghornClient.msi" -ExePath "$next\dist\FoghornClient.exe"
+
+      - name: A certificate this machine trusts, for https://localhost
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $gen = "$env:RUNNER_TEMP\gencert"
+          New-Item -ItemType Directory -Force $gen | Out-Null
+          @'
+          package main
+
+          import (
+          	"crypto/ecdsa"
+          	"crypto/elliptic"
+          	"crypto/rand"
+          	"crypto/x509"
+          	"crypto/x509/pkix"
+          	"encoding/pem"
+          	"math/big"
+          	"os"
+          	"time"
+          )
+
+          func main() {
+          	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+          	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "localhost"},
+          		DNSNames: []string{"localhost"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+          		KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+          		BasicConstraintsValid: true, IsCA: true}
+          	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+          	k, _ := x509.MarshalECPrivateKey(key)
+          	os.WriteFile(os.Args[1]+"/cert.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600)
+          	os.WriteFile(os.Args[1]+"/key.pem", pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: k}), 0o600)
+          }
+          '@ -replace '(?m)^          ', '' | Set-Content "$gen\main.go" -Encoding ASCII
+          go run "$gen\main.go" $gen
+          if ($LASTEXITCODE -ne 0) { throw "could not make a certificate" }
+          Import-Certificate -FilePath "$gen\cert.pem" -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
+
+      - name: Install 1.2 and watch it update itself to 99.0.0
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $next = "$env:RUNNER_TEMP\next"
+          $data = "$env:RUNNER_TEMP\server-data"
+          $key = 'abcdef0123456789abcdef0123456789abcdef0123456789'
+          $msi = "$next\dist\FoghornClient.msi"
+          $sha = (Get-FileHash $msi -Algorithm SHA256).Hash.ToLower()
+
+          # A server already set up with a rollout of 99.0.0 and its copy of the MSI.
+          New-Item -ItemType Directory -Force "$data\updates" | Out-Null
+          Copy-Item $msi "$data\updates\FoghornClient-99.0.0.msi"
+          @{ listen = '127.0.0.1:18443'; tls_cert = "$env:RUNNER_TEMP\gencert\cert.pem"; tls_key = "$env:RUNNER_TEMP\gencert\key.pem" } |
+            ConvertTo-Json | Set-Content "$data\config.json" -Encoding ASCII
+          @{ settings = @{ org_name = 'CI'; client_key = $key }
+             updates  = @{ rollout = @{ version = '99.0.0'; msi_sha256 = $sha; target = @{ all = $true }; target_summary = 'Every computer'; started_by = 'ci' } } } |
+            ConvertTo-Json -Depth 6 | Set-Content "$data\state.json" -Encoding ASCII
+          $srv = Start-Process .\dist\foghorn-server.exe -ArgumentList @('run', '-data', $data) -PassThru -WindowStyle Hidden `
+                   -RedirectStandardOutput "$env:RUNNER_TEMP\server.out" -RedirectStandardError "$env:RUNNER_TEMP\server.err"
+          Start-Sleep -Seconds 3
+          (Invoke-WebRequest https://localhost:18443/healthz -UseBasicParsing).Content
+
+          try {
+            # The MSI from dist\, with settings as a deployment would give it.
+            $p = Start-Process msiexec.exe -ArgumentList @('/i', "`"$PWD\dist\FoghornClient.msi`"", '/qn', 'SERVERURL=https://localhost:18443', "CLIENTKEY=$key",
+                   '/l*v', "`"$env:RUNNER_TEMP\install-current.log`"") -Wait -PassThru
+            if ($p.ExitCode -ne 0) { throw "installing dist\FoghornClient.msi failed: $($p.ExitCode)" }
+            $exe = 'C:\Program Files\Foghorn\FoghornClient.exe'
+            "installed: $((Get-Item $exe).VersionInfo.FileVersion)"
+            Start-Sleep -Seconds 3
+            sc.exe control FoghornUpdater 129 | Out-Null   # "check now", as FoghornClient.exe --update-now does
+
+            $deadline = (Get-Date).AddMinutes(8)
+            $done = $false
+            while ((Get-Date) -lt $deadline) {
+              Start-Sleep -Seconds 5
+              $v = try { (Get-Item $exe -ErrorAction Stop).VersionInfo.FileVersion } catch { '' }
+              $m = try { Get-Content "$data\machines.json" -Raw -ErrorAction Stop | ConvertFrom-Json } catch { $null }
+              $reported = @($m | Where-Object { $_.version -eq '99.0.0' }).Count -gt 0
+              if ($v -like '99.0.0*' -and $reported) { $done = $true; break }
+            }
+            $log = 'C:\Windows\System32\config\systemprofile\AppData\Local\Foghorn\updater\updater.log'
+            Write-Host "--- updater log ---"; if (Test-Path $log) { Get-Content $log } else { Write-Host '(none)' }
+            Write-Host "--- machines.json ---"; Get-Content "$data\machines.json" -ErrorAction SilentlyContinue
+            if (-not $done) { throw "the PC did not update itself to 99.0.0 and report it within 8 minutes" }
+
+            function Assert($c, $m) { if (-not $c) { throw "ASSERT FAILED: $m" } else { "  ok  $m" } }
+            Assert ((Get-Service FoghornUpdater).Status -eq 'Running') 'the new updater service is running'
+            Assert ((Get-ItemProperty HKLM:\SOFTWARE\Foghorn).ServerUrl -eq 'https://localhost:18443') 'settings survived the upgrade'
+            Assert (Select-String -Path $log -Pattern 'Downloaded 99.0.0 from the Foghorn server' -Quiet) 'with no such GitHub release, it fell back to the server over HTTPS'
+            Assert (Select-String -Path $log -Pattern 'Updated to 99.0.0' -Quiet) 'the new version confirmed the update'
+            $products = @(Get-CimInstance Win32_Product -Filter "Name='Foghorn Client'")
+            Assert ($products.Count -eq 1 -and $products[0].Version -eq '99.0.0') "one Foghorn Client installed, 99.0.0 ($($products.Version -join ', '))"
+          }
+          finally {
+            Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue
+            Copy-Item 'C:\Windows\System32\config\systemprofile\AppData\Local\Foghorn\updater\*.log' $env:RUNNER_TEMP -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: updater-logs
+          path: |
+            ${{ runner.temp }}\*.log
+            ${{ runner.temp }}\server.out
+            ${{ runner.temp }}\server-data\foghorn.log
+          if-no-files-found: ignore

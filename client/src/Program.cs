@@ -27,14 +27,14 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Shows alerts sent from the Foghorn server")]
 [assembly: AssemblyCompany("Archie Paice")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Archie Paice. MIT licence.")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyFileVersion("1.2.0.0")]
 
 namespace Foghorn
 {
     static class Program
     {
-        public const string Version = "1.1.0";
+        public const string Version = "1.2.0";
 
         /// <summary>
         /// Shown in --help and --status. Whoever is troubleshooting a PC should
@@ -60,6 +60,15 @@ namespace Foghorn
             }
             Config.Overrides = opts;
 
+            // Started by Windows as the Foghorn Updater service (the MSI installs it).
+            if (opts.ContainsKey("service")) { Config.Overrides.Clear(); System.ServiceProcess.ServiceBase.Run(new UpdaterService()); return 0; }
+            if (opts.ContainsKey("update-now"))
+            {
+                string problem = Updater.AskServiceToCheck();
+                MessageBox.Show(problem ?? "Asked the Foghorn Updater to check for an update now. If the server has a rollout for this PC, it downloads and installs it within a minute or two.",
+                    "Foghorn updater", MessageBoxButtons.OK, problem == null ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+                return problem == null ? 0 : 1;
+            }
             if (opts.ContainsKey("test")) { Application.Run(new TestContext()); return 0; }
             if (opts.ContainsKey("test-lock")) { Application.Run(new TestLockContext()); return 0; }
             if (opts.ContainsKey("status")) { StatusCheck.Run(); return 0; }
@@ -70,6 +79,7 @@ namespace Foghorn
                     "FoghornClient.exe --test       show sample alerts without needing a server\n" +
                     "FoghornClient.exe --test-lock  lock this screen for 10 seconds, to see what a lock looks like\n" +
                     "FoghornClient.exe --status     show the settings in use and test the connection\n" +
+                    "FoghornClient.exe --update-now ask the updater service to check for an update (as administrator)\n" +
                     "  --server URL --key KEY     override the configured server for this run\n\n" +
                     Credit,
                     "Foghorn client " + Version, MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -224,6 +234,7 @@ namespace Foghorn
                 else sb.AppendLine("Connection test:  FAILED\n" + problem);
             }
             sb.AppendLine();
+            sb.AppendLine("Updater service:  " + Updater.ServiceStatus());
             sb.AppendLine("Log file:  " + Log.FilePath);
             sb.AppendLine();
             sb.AppendLine(Program.Credit);

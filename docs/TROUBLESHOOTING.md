@@ -75,6 +75,15 @@ To watch it start in front of you: `Stop-Service FoghornServer`, then run
 `"C:\Program Files\Foghorn Server\foghorn-server.exe"` in an administrator
 console. Errors print there. Ctrl+C, then `Start-Service FoghornServer`.
 
+**In Docker**, the same messages are in `docker compose logs foghorn`. If
+`docker compose up` says `port is already allocated`, something else on the
+host has that port. Set `FOGHORN_PORT` to a free one in a `.env` file next to
+`docker-compose.yml`. If the log says it cannot write to `/data`, the volume is
+a host folder that the container's user (ID 10001) cannot write to. Fix it with
+`sudo chown -R 10001:10001 <that folder>`, or use the named volume from
+`docker-compose.yml`. See
+[INSTALL-SERVER.md, Appendix C](INSTALL-SERVER.md#appendix-c-running-in-docker).
+
 ## I cannot open or sign in to the web console
 
 - **Page will not load from another PC but works on the server itself** (`http://localhost:8080/`): the firewall. Re-run the installer, or check the *Foghorn Alert Server* inbound rule exists and that the server's network is classed as Domain or Private, not Public.
