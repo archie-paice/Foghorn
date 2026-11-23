@@ -54,11 +54,15 @@ rolled out from **Updates** in the console. See [docs/UPDATING.md](docs/UPDATING
 - `Update-MsiClient.ps1` copies the service and the upgrade schedule from
   `FoghornClient.wxs` into the MSI, and checks them. It now inserts values as
   query parameters, because MSI SQL cannot escape a quote.
-- **Upgrading an installed client works.** Every MSI since 1.0.2 had blank
-  version bounds in its Upgrade table, a side effect of the string-pool
-  damage fixed in 1.1. Every installed version then looked newer, so
-  installing over one stopped with error 1603. `Update-MsiClient.ps1` now
-  writes both rows from `FoghornClient.wxs` and checks them.
+- **Upgrading an installed client works.** Two faults in every MSI since
+  1.0.2 broke it, both side effects of the string-pool damage fixed in 1.1:
+  - The Upgrade table had blank version bounds. Every installed version looked
+    newer, so installing over one stopped with error 1603.
+  - The client had no file version recorded, so an installed client was kept
+    in preference to the new one and then removed with the old product. That
+    left no client at all.
+  `Update-MsiClient.ps1` now writes both from `FoghornClient.wxs` and the exe,
+  and checks them.
 - The MSI deploy test also checks the updater service, and upgrades from
   1.0.2 and from the broken 1.0.3 MSI.
 

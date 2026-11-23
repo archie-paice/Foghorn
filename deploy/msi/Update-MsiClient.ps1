@@ -88,6 +88,9 @@ if ($fileRows.Count -ne 1) {
 $fileKey = $fileRows[0][0]
 $cabName = ((Get-Rows $db "SELECT Cabinet FROM Media" 1)[0][0]) -replace '^#', ''   # '#foghorn.cab' = embedded
 $newSize = (Get-Item $ExePath).Length
+$vi = (Get-Item $ExePath).VersionInfo
+$newFileVersion = '{0}.{1}.{2}.{3}' -f $vi.FileMajorPart, $vi.FileMinorPart, $vi.FileBuildPart, $vi.FilePrivatePart
+if ($newFileVersion -eq '0.0.0.0') { throw "$ExePath has no file version; the MSI could not upgrade over an installed client" }
 
 # FoghornClient.wxs is the one place the version is written down. If the MSI
 # disagrees with it, this script brings the MSI up to date rather than letting
@@ -272,7 +275,17 @@ try {
     [void]$view.Modify(1, $rec)
     [void]$view.Close()
 
-    $view = $db.OpenView("UPDATE File SET FileSize = $newSize WHERE File = '$fileKey'")
+    # The file version matters as much as the size. Windows Installer compares
+    # it with the installed exe to decide whether to replace it. Earlier MSIs
+    # left it blank, which marks the file unversioned, and an installed
+    # versioned exe always beats an unversioned one. An upgrade then skipped
+    # the new client, removed the old one, and left the PC with no client.
+    $view = $db.OpenView("UPDATE File SET FileSize = $newSize, Version = '$newFileVersion' WHERE File = '$fileKey'")
+    [void]$view.Execute($null)
+    [void]$view.Close()
+    # A hash is only for unversioned files. The old one described an earlier
+    # client and was never refreshed, so drop it.
+    $view = $db.OpenView("DELETE FROM MsiFileHash WHERE File_ = '$fileKey'")
     [void]$view.Execute($null)
     [void]$view.Close()
 
@@ -383,6 +396,10 @@ Assert ($upg['WIX_DOWNGRADE_DETECTED'] -and $upg['WIX_DOWNGRADE_DETECTED'][1] -e
        "only versions above $wxsVersion count as a downgrade"
 Assert ((Get-Rows $vdb "SELECT FileSize FROM File WHERE File = '$fileKey'" 1)[0][0] -eq "$newSize") `
        "File table records $newSize bytes"
+Assert ((Get-Rows $vdb "SELECT Version FROM File WHERE File = '$fileKey'" 1)[0][0] -eq $newFileVersion) `
+       "File table records the client as version $newFileVersion, so it replaces an older installed one"
+Assert ((Get-Rows $vdb "SELECT File_ FROM MsiFileHash WHERE File_ = '$fileKey'" 1).Count -eq 0) `
+       'no stale file hash for the (versioned) client'
 Assert ($version -eq $wxsVersion) "ProductVersion is $wxsVersion, matching FoghornClient.wxs"
 Assert ($props['Manufacturer'] -eq $wxsXml.Wix.Product.Manufacturer) `
        "Manufacturer (the Publisher shown in Apps and Features) is $($wxsXml.Wix.Product.Manufacturer)"
