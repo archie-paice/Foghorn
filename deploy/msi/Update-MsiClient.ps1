@@ -88,6 +88,9 @@ if ($fileRows.Count -ne 1) {
 $fileKey = $fileRows[0][0]
 $cabName = ((Get-Rows $db "SELECT Cabinet FROM Media" 1)[0][0]) -replace '^#', ''   # '#foghorn.cab' = embedded
 $newSize = (Get-Item $ExePath).Length
+$vi = (Get-Item $ExePath).VersionInfo
+$newFileVersion = '{0}.{1}.{2}.{3}' -f $vi.FileMajorPart, $vi.FileMinorPart, $vi.FileBuildPart, $vi.FilePrivatePart
+if ($newFileVersion -eq '0.0.0.0') { throw "$ExePath has no file version; the MSI could not upgrade over an installed client" }
 
 # FoghornClient.wxs is the one place the version is written down. If the MSI
 # disagrees with it, this script brings the MSI up to date rather than letting
@@ -244,6 +247,23 @@ try {
     Invoke-Sql "UPDATE InstallExecuteSequence SET Sequence = $($reqSeq[$schedule]) WHERE Action = 'RemoveExistingProducts'"
     Write-Host "Services: $services from FoghornClient.wxs; old versions removed $schedule"
 
+    # MajorUpgrade's two Upgrade rows, written out the way WiX does. Both carry
+    # this version as their bound, so they must follow it when it changes. They
+    # also have to be rewritten regardless: the string-pool damage described
+    # above blanked both bounds in 1.0.2 (and left ProductCodes in them in
+    # 1.0.3). With no bounds, the downgrade row matches every installed
+    # version. Every upgrade then sets WIX_DOWNGRADE_DETECTED and stops at the
+    # launch condition with error 1603, and only clean installs work.
+    $upgradeCode = (Get-Rows $db "SELECT Value FROM Property WHERE Property = 'UpgradeCode'" 1)[0][0]
+    if (-not $upgradeCode) { throw "The MSI has no UpgradeCode" }
+    Invoke-Sql "DELETE FROM Upgrade"
+    # 1 = msidbUpgradeAttributesMigrateFeatures; the maximum is exclusive.
+    Insert 'Upgrade' ([ordered]@{ UpgradeCode = $upgradeCode; VersionMax = $wxsVersion; Attributes = [int]1; ActionProperty = 'WIX_UPGRADE_DETECTED' })
+    # 2 = msidbUpgradeAttributesOnlyDetect; the minimum is exclusive, so the same
+    # version is not a downgrade.
+    Insert 'Upgrade' ([ordered]@{ UpgradeCode = $upgradeCode; VersionMin = $wxsVersion; Attributes = [int]2; ActionProperty = 'WIX_DOWNGRADE_DETECTED' })
+    Write-Host "Upgrade:  replaces versions below $wxsVersion, refuses to replace newer ones"
+
     # ---- put the cabinet in and correct the recorded size -------------------
     # _Streams will not take a stream as a query parameter, so build the row
     # and insert it. 1 = msiViewModifyInsert.
@@ -255,7 +275,17 @@ try {
     [void]$view.Modify(1, $rec)
     [void]$view.Close()
 
-    $view = $db.OpenView("UPDATE File SET FileSize = $newSize WHERE File = '$fileKey'")
+    # The file version matters as much as the size. Windows Installer compares
+    # it with the installed exe to decide whether to replace it. Earlier MSIs
+    # left it blank, which marks the file unversioned, and an installed
+    # versioned exe always beats an unversioned one. An upgrade then skipped
+    # the new client, removed the old one, and left the PC with no client.
+    $view = $db.OpenView("UPDATE File SET FileSize = $newSize, Version = '$newFileVersion' WHERE File = '$fileKey'")
+    [void]$view.Execute($null)
+    [void]$view.Close()
+    # A hash is only for unversioned files. The old one described an earlier
+    # client and was never refreshed, so drop it.
+    $view = $db.OpenView("DELETE FROM MsiFileHash WHERE File_ = '$fileKey'")
     [void]$view.Execute($null)
     [void]$view.Close()
 
@@ -358,8 +388,18 @@ $seq = @{}
 foreach ($r in (Get-Rows $vdb "SELECT Action, Sequence FROM InstallExecuteSequence" 2)) { $seq[$r[0]] = [int]$r[1] }
 Assert ($seq['InstallServices'] -and $seq['StartServices'] -and $seq['StopServices'] -and $seq['DeleteServices']) 'service actions are in the install sequence'
 Assert ($seq['RemoveExistingProducts'] -gt $seq['InstallInitialize']) 'an upgrade that fails rolls back to the old version (RemoveExistingProducts after InstallInitialize)'
+$upg = @{}
+foreach ($r in (Get-Rows $vdb "SELECT ActionProperty, VersionMin, VersionMax, Attributes FROM Upgrade" 4)) { $upg[$r[0]] = $r }
+Assert ($upg['WIX_UPGRADE_DETECTED'] -and $upg['WIX_UPGRADE_DETECTED'][1] -eq '' -and $upg['WIX_UPGRADE_DETECTED'][2] -eq $wxsVersion) `
+       "older versions (below $wxsVersion) are upgraded"
+Assert ($upg['WIX_DOWNGRADE_DETECTED'] -and $upg['WIX_DOWNGRADE_DETECTED'][1] -eq $wxsVersion -and $upg['WIX_DOWNGRADE_DETECTED'][2] -eq '' -and $upg['WIX_DOWNGRADE_DETECTED'][3] -eq '2') `
+       "only versions above $wxsVersion count as a downgrade"
 Assert ((Get-Rows $vdb "SELECT FileSize FROM File WHERE File = '$fileKey'" 1)[0][0] -eq "$newSize") `
        "File table records $newSize bytes"
+Assert ((Get-Rows $vdb "SELECT Version FROM File WHERE File = '$fileKey'" 1)[0][0] -eq $newFileVersion) `
+       "File table records the client as version $newFileVersion, so it replaces an older installed one"
+Assert ((Get-Rows $vdb "SELECT File_ FROM MsiFileHash WHERE File_ = '$fileKey'" 1).Count -eq 0) `
+       'no stale file hash for the (versioned) client'
 Assert ($version -eq $wxsVersion) "ProductVersion is $wxsVersion, matching FoghornClient.wxs"
 Assert ($props['Manufacturer'] -eq $wxsXml.Wix.Product.Manufacturer) `
        "Manufacturer (the Publisher shown in Apps and Features) is $($wxsXml.Wix.Product.Manufacturer)"
