@@ -74,14 +74,24 @@ type Rollout struct {
 	Rules         []Rule    `json:"rules"`
 	TargetSummary string    `json:"target_summary"`
 	Paused        bool      `json:"paused"`
-	StartedBy     string    `json:"started_by"`
-	StartedAt     time.Time `json:"started_at"`
+	StartedBy     string     `json:"started_by"`
+	StartedAt     time.Time  `json:"started_at"`
+	CompletedAt   *time.Time `json:"completed_at,omitempty"` // when update.rollout_complete was announced
 }
 
 type UpdateState struct {
 	Latest    *Release  `json:"latest,omitempty"`
 	CheckedAt time.Time `json:"checked_at"`
 	Rollout   *Rollout  `json:"rollout,omitempty"`
+
+	// Announced is the newest release update.available has been sent for,
+	// so each release is announced once however often anyone checks.
+	Announced string `json:"announced,omitempty"`
+	// ServerVersion is the version that last ran on this data, so a start on
+	// a different version can be announced as update.server_installed.
+	ServerVersion string `json:"server_version,omitempty"`
+	// ServerUpdateBy is who pressed "Update server", until the new version starts.
+	ServerUpdateBy string `json:"server_update_by,omitempty"`
 }
 
 // Machine is a PC's updater service, as opposed to ClientInfo, which is a
@@ -283,14 +293,27 @@ func serverAssetName() string {
 // selfUpdate reports whether this server can replace its own program, and if
 // not, why not.
 func (a *App) selfUpdate() (exe string, managed bool, reason string) {
-	// In a container the program is part of the image: a replaced binary would
-	// vanish when the container is recreated, so update the image instead.
-	if os.Getenv("FOGHORN_IN_CONTAINER") != "" {
-		return "", false, "This server runs in a container. Update it by pulling or rebuilding the image " +
-			"(for example: git pull, then docker compose up -d --build). Your data is kept."
-	}
 	if serverAssetName() == "" {
 		return "", false, "There is no published build for " + runtime.GOOS + "/" + runtime.GOARCH + "."
+	}
+	// In a container the program in the image vanishes with the container, so
+	// the update goes into the data volume instead. On start-up the image's
+	// program hands over to that copy whenever it is the newer of the two
+	// (see handOffToNewer), so rebuilding the image later still wins if the
+	// image is newer. Docker's restart policy brings the container back.
+	if inContainer() {
+		exe = containerProgram(a.store.dir)
+		if err := os.MkdirAll(filepath.Dir(exe), 0o750); err != nil {
+			return exe, false, "The server cannot create " + filepath.Dir(exe) + ": " + err.Error()
+		}
+		probe := filepath.Join(filepath.Dir(exe), ".foghorn-write-test")
+		f, err := os.OpenFile(probe, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			return exe, false, "The server cannot write to " + filepath.Dir(exe) + " in its data volume."
+		}
+		f.Close()
+		os.Remove(probe)
+		return exe, true, ""
 	}
 	exe, err := os.Executable()
 	if err == nil {
@@ -333,6 +356,14 @@ func installServerBinary(exe string, data []byte, wantVersion string) error {
 		}
 		return fmt.Errorf("the new program says it is %q, not %s", got, wantVersion)
 	}
+	if _, err := os.Stat(exe); os.IsNotExist(err) {
+		// The first update in a container: nothing to move aside yet.
+		if err := os.Rename(staged, exe); err != nil {
+			os.Remove(staged)
+			return fmt.Errorf("could not put the new program in place: %w", err)
+		}
+		return nil
+	}
 	old := exe + ".old"
 	os.Remove(old)
 	// Windows lets a running program be renamed, though not deleted.
@@ -372,6 +403,12 @@ func (a *App) handleUpdateServer(w http.ResponseWriter, r *http.Request, id *ide
 		return
 	}
 	log.Printf("SERVER UPDATED from %s to %s by %s (previous program kept as %s.old)", version, rel.Version, id.User.Username, filepath.Base(exe))
+	// update.server_installed goes out when the new version starts and names this person.
+	a.store.mu.Lock()
+	a.store.State.Updates.ServerUpdateBy = id.User.Username
+	a.store.dirtyState = true
+	a.store.mu.Unlock()
+	a.save()
 	if !managed {
 		writeJSON(w, http.StatusOK, map[string]any{"restarting": false, "version": rel.Version,
 			"message": "Installed. This server is running in a window, so stop it and start it again to run " + rel.Version + "."})
@@ -402,13 +439,107 @@ func (a *App) handleCheckUpdates(w http.ResponseWriter, r *http.Request, id *ide
 		writeErr(w, http.StatusBadGateway, "check_failed", err.Error())
 		return
 	}
+	a.recordRelease(rel)
+	a.handleUpdateStatus(w, r, id)
+}
+
+// handleUpdateSettings turns the daily check for new releases on or off.
+func (a *App) handleUpdateSettings(w http.ResponseWriter, r *http.Request, id *identity) {
+	var req struct {
+		AutoCheck bool `json:"auto_check"`
+	}
+	if !readJSON(w, r, &req, 4<<10) {
+		return
+	}
 	a.store.mu.Lock()
-	a.store.State.Updates.Latest = rel
-	a.store.State.Updates.CheckedAt = time.Now()
+	a.store.State.Settings.AutoCheckUpdates = req.AutoCheck
 	a.store.dirtyState = true
 	a.store.mu.Unlock()
 	a.save()
+	log.Printf("daily update check turned %s by %s", map[bool]string{true: "on", false: "off"}[req.AutoCheck], id.User.Username)
 	a.handleUpdateStatus(w, r, id)
+}
+
+// recordRelease keeps what GitHub said is the latest release and, the first
+// time a release newer than this server is seen, announces it.
+func (a *App) recordRelease(rel *Release) {
+	a.store.mu.Lock()
+	u := &a.store.State.Updates
+	u.Latest = rel
+	u.CheckedAt = time.Now()
+	announce := versionLess(version, rel.Version) && rel.Version != u.Announced
+	if announce {
+		u.Announced = rel.Version
+	}
+	a.store.dirtyState = true
+	a.store.mu.Unlock()
+	a.save()
+	if announce {
+		log.Printf("Foghorn %s is available (this server runs %s)", rel.Version, version)
+		a.emit("update.available", map[string]any{
+			"version": rel.Version, "current_version": version, "tag": rel.Tag, "name": rel.Name,
+			"url": rel.URL, "published_at": rel.PublishedAt, "notes": clip(rel.Notes, 1500),
+		})
+	}
+}
+
+const autoCheckEvery = 24 * time.Hour
+
+// autoCheckUpdates asks GitHub once a day for a new release, but only while
+// an administrator has turned that on under Updates.
+func (a *App) autoCheckUpdates(ctx context.Context) {
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	first := time.After(time.Minute) // let the server settle after a start
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-first:
+		case <-t.C:
+		}
+		a.store.mu.Lock()
+		on := a.store.State.Settings.AutoCheckUpdates
+		last := a.store.State.Updates.CheckedAt
+		a.store.mu.Unlock()
+		if !on || time.Since(last) < autoCheckEvery {
+			continue
+		}
+		cctx, cancel := context.WithTimeout(ctx, time.Minute)
+		rel, err := a.fetchLatestRelease(cctx)
+		cancel()
+		if err != nil {
+			log.Printf("daily update check failed (will try again in an hour): %v", err)
+			continue
+		}
+		a.recordRelease(rel)
+	}
+}
+
+// noteServerVersion announces update.server_installed when this server starts
+// on a different version from the one that last ran on this data: after
+// "Update server", a rebuilt container or an upgrade by hand. It is sent at
+// start-up because the old version exits too soon after installing to
+// deliver anything itself.
+func (a *App) noteServerVersion() {
+	a.store.mu.Lock()
+	u := &a.store.State.Updates
+	prev, by := u.ServerVersion, u.ServerUpdateBy
+	changed := prev != version
+	if changed {
+		u.ServerVersion, u.ServerUpdateBy = version, ""
+		a.store.dirtyState = true
+	}
+	a.store.mu.Unlock()
+	if !changed {
+		return
+	}
+	a.save()
+	if prev == "" {
+		return // the first start of a server that never recorded its version
+	}
+	log.Printf("server now runs %s (was %s)", version, prev)
+	a.emit("update.server_installed", map[string]any{"from": prev, "to": version, "by": by})
 }
 
 type versionCount struct {
@@ -421,6 +552,7 @@ func (a *App) handleUpdateStatus(w http.ResponseWriter, r *http.Request, id *ide
 	now := time.Now()
 	a.store.mu.Lock()
 	u := a.store.State.Updates
+	autoCheck := a.store.State.Settings.AutoCheckUpdates
 	machines := make([]Machine, 0, len(a.store.Machines))
 	counts := map[string]int{}
 	for _, m := range a.store.Machines {
@@ -468,8 +600,8 @@ func (a *App) handleUpdateStatus(w http.ResponseWriter, r *http.Request, id *ide
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"server_version": version, "repo": a.updateRepo(),
-		"latest": u.Latest, "checked_at": u.CheckedAt,
-		"server_update": map[string]any{"possible": reason == "", "reason": reason, "restarts_itself": managed, "program": exe},
+		"latest": u.Latest, "checked_at": u.CheckedAt, "auto_check": autoCheck,
+		"server_update": map[string]any{"possible": reason == "", "reason": reason, "restarts_itself": managed, "program": exe, "container": inContainer()},
 		"rollout":       u.Rollout,
 		"progress":      map[string]int{"target": target, "done": done, "pending": pending, "failed": failed},
 		"versions":      vc, "machines": machines, "legacy_pcs": len(legacy),
@@ -523,12 +655,28 @@ func (a *App) handleStartRollout(w http.ResponseWriter, r *http.Request, id *ide
 	rules, summary := a.store.flattenTarget(req.Target)
 	ro := &Rollout{Version: rel.Version, MsiSHA256: sum, Target: req.Target, Rules: rules, TargetSummary: summary,
 		Paused: req.Paused, StartedBy: id.User.Username, StartedAt: time.Now()}
+	// Pause and Resume send the same rollout again with only "paused" changed.
+	event := "update.rollout_started"
+	if prev := a.store.State.Updates.Rollout; prev != nil && prev.Version == ro.Version && prev.TargetSummary == ro.TargetSummary {
+		ro.StartedBy, ro.StartedAt, ro.CompletedAt = prev.StartedBy, prev.StartedAt, prev.CompletedAt
+		switch {
+		case ro.Paused && !prev.Paused:
+			event = "update.rollout_paused"
+		case !ro.Paused && prev.Paused:
+			event = "update.rollout_resumed"
+		default:
+			event = ""
+		}
+	}
 	a.store.State.Updates.Rollout = ro
 	a.store.dirtyState = true
 	relCopy := *rel
 	a.store.mu.Unlock()
 	a.save()
 	log.Printf("ROLLOUT of client %s to [%s] set by %s (paused=%v)", ro.Version, summary, id.User.Username, ro.Paused)
+	if event != "" {
+		a.emit(event, map[string]any{"version": ro.Version, "target_summary": summary, "by": id.User.Username})
+	}
 	// Keep a copy of the MSI here too, for PCs that cannot reach GitHub.
 	go a.cacheMSI(&relCopy)
 	writeJSON(w, http.StatusOK, ro)
@@ -536,11 +684,15 @@ func (a *App) handleStartRollout(w http.ResponseWriter, r *http.Request, id *ide
 
 func (a *App) handleStopRollout(w http.ResponseWriter, r *http.Request, id *identity) {
 	a.store.mu.Lock()
+	prev := a.store.State.Updates.Rollout
 	a.store.State.Updates.Rollout = nil
 	a.store.dirtyState = true
 	a.store.mu.Unlock()
 	a.save()
 	log.Printf("ROLLOUT stopped by %s", id.User.Username)
+	if prev != nil {
+		a.emit("update.rollout_stopped", map[string]any{"version": prev.Version, "target_summary": prev.TargetSummary, "by": id.User.Username})
+	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -607,23 +759,68 @@ func (a *App) handleUpdaterCheck(w http.ResponseWriter, r *http.Request) {
 		m = &Machine{}
 		a.store.Machines[key] = m
 	}
+	var events []hookEvent
+	ro := a.store.State.Updates.Rollout
+	updated := m.Version != "" && m.Version != h.Version
 	if m.Version != h.Version {
-		if m.Version != "" {
+		if updated {
 			log.Printf("PC %s updated from %s to %s", h.Hostname, m.Version, h.Version)
+			ev := map[string]any{"hostname": h.Hostname, "from": m.Version, "to": h.Version}
+			if ro != nil {
+				ev["rollout_version"] = ro.Version
+			}
+			events = append(events, hookEvent{"update.pc_updated", ev})
 		}
 		m.UpdatedAt = now
 	}
+	detail := cleanText(h.Detail, 500)
+	if h.State == "failed" && (m.State != "failed" || m.Detail != detail) {
+		ev := map[string]any{"hostname": h.Hostname, "version": h.Version, "detail": detail}
+		if ro != nil {
+			ev["target_version"] = ro.Version
+		}
+		events = append(events, hookEvent{"update.pc_failed", ev})
+	}
 	m.Hostname, m.Domain, m.OU, m.IP = h.Hostname, cleanText(h.Domain, 64), cleanText(h.OU, 512), a.remoteIP(r)
-	m.Version, m.State, m.Detail, m.LastSeen = h.Version, h.State, cleanText(h.Detail, 500), now
+	m.Version, m.State, m.Detail, m.LastSeen = h.Version, h.State, detail, now
 	a.store.dirtyMachines = true
 
+	// The last PC in a rollout reaching its version completes it.
+	if updated && ro != nil && ro.CompletedAt == nil {
+		if target, done := a.rolloutProgress(ro); target > 0 && done == target {
+			t := now
+			ro.CompletedAt = &t
+			a.store.dirtyState = true
+			events = append(events, hookEvent{"update.rollout_complete", map[string]any{
+				"version": ro.Version, "target_summary": ro.TargetSummary, "pcs": target, "by": ro.StartedBy}})
+		}
+	}
+
 	resp := map[string]any{"check_seconds": int(updaterCheckEvery.Seconds()), "update": nil}
-	if ro := a.store.State.Updates.Rollout; ro != nil && !ro.Paused && versionLess(h.Version, ro.Version) && a.machineInRollout(ro, m) {
+	if ro != nil && !ro.Paused && versionLess(h.Version, ro.Version) && a.machineInRollout(ro, m) {
 		_, err := os.Stat(a.cachedMSIPath(ro.Version))
 		resp["update"] = map[string]any{"version": ro.Version, "sha256": ro.MsiSHA256, "server_copy": err == nil}
 	}
 	a.store.mu.Unlock()
+	for _, ev := range events {
+		a.emit(ev.name, ev.data)
+	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// rolloutProgress counts the PCs a rollout covers and how many are on its
+// version or newer. Caller holds the lock.
+func (a *App) rolloutProgress(ro *Rollout) (target, done int) {
+	for _, m := range a.store.Machines {
+		if !a.machineInRollout(ro, m) {
+			continue
+		}
+		target++
+		if !versionLess(m.Version, ro.Version) {
+			done++
+		}
+	}
+	return target, done
 }
 
 // handleUpdaterMSI hands out this server's copy of the MSI being rolled out.

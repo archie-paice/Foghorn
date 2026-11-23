@@ -28,8 +28,9 @@ RUN apk add --no-cache ca-certificates tzdata \
  && install -d -o foghorn -g foghorn -m 0750 /data
 COPY --from=build /out/foghorn-server /usr/local/bin/foghorn-server
 
-# FOGHORN_IN_CONTAINER turns off "Update server" in the console: the program is
-# part of the image, so you update by pulling or rebuilding the image instead.
+# FOGHORN_IN_CONTAINER makes "Update server" in the console install into the
+# data volume (/data/bin) rather than over this image's program, which would
+# be lost with the container. Each start uses whichever of the two is newer.
 ENV FOGHORN_DATA=/data \
     FOGHORN_IN_CONTAINER=1
 USER foghorn

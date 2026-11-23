@@ -38,7 +38,24 @@ var webhookEvents = map[string]string{
 	"alert.recalled":     "An alert was recalled",
 	"lock.started":       "Screens were locked",
 	"lock.unlocked":      "Screens were unlocked",
+
+	"update.available":        "A new Foghorn version was released",
+	"update.server_installed": "This server started running a new version",
+	"update.rollout_started":  "A client rollout was started",
+	"update.rollout_paused":   "A client rollout was paused",
+	"update.rollout_resumed":  "A client rollout was resumed",
+	"update.rollout_stopped":  "A client rollout was stopped",
+	"update.rollout_complete": "Every PC in a rollout is on the new version",
+	"update.pc_updated":       "A PC installed a new client version",
+	"update.pc_failed":        "A PC could not install an update",
+
+	"api.call": "An API token changed something (only sent when ticked)",
 }
+
+// optInEvents are left out of "every event": a webhook has to ask for them.
+// api.call fires on every change an integration makes, so it would be noise
+// for anyone who did not want it.
+var optInEvents = map[string]bool{"api.call": true}
 
 var webhookRetryDelays = []time.Duration{0, 5 * time.Second, 30 * time.Second, 2 * time.Minute}
 
@@ -83,7 +100,7 @@ func wantsEvent(h *Webhook, event string) bool {
 		return true
 	}
 	if len(h.Events) == 0 {
-		return true
+		return !optInEvents[event]
 	}
 	return hasScope(h.Events, event)
 }

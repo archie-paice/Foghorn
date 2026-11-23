@@ -9,9 +9,28 @@ checked against each release's published `SHA256SUMS.txt`. Nothing an
 administrator types or uploads can become a program that runs on your PCs.
 [How that is enforced](#why-updates-can-be-trusted) is at the end.
 
-Foghorn still never contacts the internet by itself. The server checks
-GitHub only when someone presses **Check for updates**, and PCs download a
-release only after an administrator has started a rollout.
+Foghorn never contacts the internet by itself unless you ask it to. The server
+checks GitHub when someone presses **Check for updates**, or once a day if an
+administrator ticks **Check for new versions once a day** on the Updates page
+(off by default). PCs download a release only after an administrator has
+started a rollout.
+
+## Hearing about updates
+
+Webhooks (**Settings → Webhooks**, including Discord) can be told about every
+step. A webhook with no events ticked gets all of these:
+
+| Event | When |
+|---|---|
+| `update.available` | A check finds a release newer than this server. Sent once per release. |
+| `update.server_installed` | The server starts on a different version: after **Update server**, a rebuilt container or an upgrade by hand. Says who pressed the button, if anyone did. |
+| `update.rollout_started` / `_paused` / `_resumed` / `_stopped` | Someone started, paused, resumed or stopped a client rollout. |
+| `update.pc_updated` | A PC's updater reports a new client version. |
+| `update.pc_failed` | A PC could not install an update. Sent once per failure, with the reason. |
+| `update.rollout_complete` | Every PC in a rollout is on its version. |
+
+To be told about new releases without anyone pressing **Check for updates**,
+turn on the daily check.
 
 ---
 
@@ -35,7 +54,7 @@ the files and start it again.
 | Under systemd, installed as in [INSTALL-SERVER.md](INSTALL-SERVER.md#a1-install) from 1.2 | Yes. systemd restarts it on the new version. |
 | Under systemd, installed before 1.2 (program in `/usr/local/bin`) | Not until you move it once: see [Upgrading](INSTALL-SERVER.md#a6-looking-after-it). The page tells you this. |
 | In a command window (`foghorn-server run`) | It installs the update, then asks you to restart it yourself. |
-| In Docker ([INSTALL-SERVER.md, Appendix C](INSTALL-SERVER.md#appendix-c-running-in-docker)) | No. The program is part of the image, so update the image: `git pull`, then `docker compose up -d --build`. The page tells you this. Your data volume is kept. |
+| In Docker ([INSTALL-SERVER.md, Appendix C](INSTALL-SERVER.md#appendix-c-running-in-docker)) | Yes, from 1.3. The new version is saved in the data volume (`/data/bin`) and Docker's restart policy starts it. Rebuilding the image (`git pull`, then `docker compose up -d --build`) also still works; whichever version is newer runs. |
 
 ## Updating the PCs
 

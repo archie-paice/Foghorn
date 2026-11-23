@@ -254,7 +254,15 @@ JSON to that address:
 | `alert.responded` | Someone pressed a reply button; `data.response` says which. |
 | `alert.recalled` | An alert was recalled. |
 | `lock.started` / `lock.unlocked` | Screens were locked or unlocked. |
+| `update.available` | A check found a newer Foghorn release (once per release). |
+| `update.server_installed` | The server started on a new version. |
+| `update.rollout_started` / `_paused` / `_resumed` / `_stopped` | A client rollout changed. |
+| `update.pc_updated` / `update.pc_failed` | A PC installed an update, or could not. |
+| `update.rollout_complete` | Every PC in a rollout is on its version. |
+| `api.call` | An API token made a change (any call other than GET). `data` has the token's name, method, path, status, IP and time taken, never the token or the request body. **Only sent to webhooks that tick it**, not to those receiving every event. |
 | `ping` | The **Test** button in Settings. |
+
+The update events are described in [UPDATING.md](UPDATING.md#hearing-about-updates).
 
 **Check the signature.** Each delivery carries `X-Foghorn-Timestamp` and
 `X-Foghorn-Signature: sha256=<hex>`, where `<hex>` is the HMAC-SHA256 of

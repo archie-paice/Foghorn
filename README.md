@@ -40,7 +40,7 @@ Active Directory.
 - **An API for integrations.** Scoped tokens (send / lock / read), idempotent sends, signed **webhooks** for replies and locks, and an OpenAPI description. There's a [Laravel guide](docs/INTEGRATIONS-LARAVEL.md) with drop-in code.
 - **Small.** About 40 MB of memory on the server with 1,500 PCs connected. The client is a 64 KB `.exe` and needs nothing installed on Windows 10 or 11.
 - **Standard deployment.** Roll the client out with an MSI + transform through Group Policy Software Installation, Intune, SCCM, PDQ, or a start-up script.
-- **No internet needed.** Console uses system fonts only. No CDN, no telemetry, and no calls out unless an administrator checks for updates.
+- **No internet needed.** Console uses system fonts only. No CDN, no telemetry, and no calls out unless an administrator checks for updates or turns on the daily update check.
 - **HTTPS** with your own certificate. Cross-site request forgery and login lock-out are built in. Passwords are PBKDF2-SHA256 (210,000 rounds).
 
 ## Quick start (about 10 minutes)
@@ -126,7 +126,7 @@ docker compose logs foghorn      # temporary admin password + client key
 Then browse to `http://<docker host>:8080/` and continue from step 2 of the
 quick start. Data lives in the `foghorn-data` volume. Set `TZ` in
 `docker-compose.yml` to your time zone, because schedules run on that clock.
-You update by rebuilding the image, not with **Update server**. Ports, HTTPS,
+Update with **Update server** on the Updates page, or by rebuilding the image; whichever version is newer runs. Ports, HTTPS,
 backups, password resets and IP-address caveats are in
 **[docs/INSTALL-SERVER.md — Appendix C](docs/INSTALL-SERVER.md#appendix-c-running-in-docker)**.
 

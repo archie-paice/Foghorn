@@ -161,6 +161,51 @@ func discordBody(payload []byte) ([]byte, error) {
 		e.Color = discordGreen
 		add("Unlocked", str(l, "target_summary"), true)
 		add("Unlocked by", str(d, "unlocked_by"), true)
+	case "update.available":
+		e.Title = "Foghorn " + str(d, "version") + " is available"
+		e.Color = discordBlue
+		e.Description = clip(str(d, "notes"), 1500)
+		if u := str(d, "url"); strings.HasPrefix(u, "https://") {
+			e.URL = u
+		}
+		add("This server runs", str(d, "current_version"), true)
+		add("Install it", "Web console → Updates", true)
+	case "update.server_installed":
+		e.Title = "Server updated to " + str(d, "to")
+		e.Color = discordGreen
+		add("Was", str(d, "from"), true)
+		add("Updated by", str(d, "by"), true)
+	case "update.rollout_started", "update.rollout_paused", "update.rollout_resumed", "update.rollout_stopped":
+		verb := map[string]string{"update.rollout_started": "started", "update.rollout_paused": "paused",
+			"update.rollout_resumed": "resumed", "update.rollout_stopped": "stopped"}[p.Event]
+		e.Title = "Rollout of " + str(d, "version") + " " + verb
+		e.Color = map[string]int{"started": discordBlue, "paused": discordAmber, "resumed": discordBlue, "stopped": discordGrey}[verb]
+		add("PCs", str(d, "target_summary"), true)
+		add("By", str(d, "by"), true)
+	case "update.rollout_complete":
+		e.Title = "Rollout of " + str(d, "version") + " complete"
+		e.Color = discordGreen
+		e.Description = "Every PC in the rollout is on " + str(d, "version") + "."
+		add("PCs", str(d, "target_summary")+" ("+num(d, "pcs")+")", true)
+	case "update.pc_updated":
+		e.Title = str(d, "hostname") + " updated to " + str(d, "to")
+		e.Color = discordGreen
+		add("Was", str(d, "from"), true)
+	case "update.pc_failed":
+		e.Title = str(d, "hostname") + " could not update"
+		e.Color = discordRed
+		e.Description = str(d, "detail")
+		add("Running", str(d, "version"), true)
+		add("Updating to", str(d, "target_version"), true)
+	case "api.call":
+		e.Title = "API: " + str(d, "method") + " " + str(d, "path")
+		e.Color = discordGrey
+		if s := num(d, "status"); s != "" && s[0] != '2' {
+			e.Color = discordAmber
+		}
+		add("Token", str(d, "token"), true)
+		add("Answer", num(d, "status"), true)
+		add("From", str(d, "ip"), true)
 	case "ping":
 		e.Title = "Test from Foghorn"
 		e.Color = discordBlue

@@ -129,6 +129,16 @@ are replayed later. Deliveries contain alert titles, computer names and
 usernames, so send them only to systems that may hold that information, and
 use `https://` addresses. Foghorn does not follow redirects when delivering.
 
+A Discord webhook URL works as its own password: anyone who has it can post to
+the channel. Foghorn shows only the start of it in Settings and keeps it out
+of the server log, but treat it like a password. If it leaks, delete the
+webhook in Discord and make a new one.
+
+The `api.call` event, which is only sent to webhooks that tick it, gives an
+audit trail of changes made through API tokens. It records the token's name,
+the method and path, the answer's status and the caller's IP. It never
+includes the token or the request body.
+
 ## Updates
 
 The PC updater runs as SYSTEM, so it would be the most valuable thing in
@@ -156,7 +166,7 @@ with two-factor authentication. Full detail in
 
 - It does not prevent logging off. A lock blocks the keyboard and mouse, but Ctrl+Alt+Del → Sign out always works (see [Screen locks](#screen-locks)).
 - It does not authenticate individual PCs. Doing that properly means a certificate per machine, which is a lot of machinery for the risk described above.
-- It does not contact the internet by itself. The server checks GitHub only when an administrator presses **Check for updates**, and PCs download from GitHub only during a rollout an administrator started. Nothing goes outside your network otherwise, unless an administrator adds a webhook pointing there. No telemetry, no update checks, no external fonts or scripts in the console.
+- It does not contact the internet by itself. The server checks GitHub only when an administrator presses **Check for updates**, or once a day if an administrator turns on **Check for new versions once a day** (off by default). That daily check is a single request to GitHub's releases API and sends nothing about your school. PCs download from GitHub only during a rollout an administrator started. Nothing goes outside your network otherwise, unless an administrator adds a webhook pointing there. No telemetry, no external fonts or scripts in the console.
 
 ## Reporting what the PCs send
 
