@@ -244,6 +244,23 @@ try {
     Invoke-Sql "UPDATE InstallExecuteSequence SET Sequence = $($reqSeq[$schedule]) WHERE Action = 'RemoveExistingProducts'"
     Write-Host "Services: $services from FoghornClient.wxs; old versions removed $schedule"
 
+    # MajorUpgrade's two Upgrade rows, written out the way WiX does. Both carry
+    # this version as their bound, so they must follow it when it changes. They
+    # also have to be rewritten regardless: the string-pool damage described
+    # above blanked both bounds in 1.0.2 (and left ProductCodes in them in
+    # 1.0.3). With no bounds, the downgrade row matches every installed
+    # version. Every upgrade then sets WIX_DOWNGRADE_DETECTED and stops at the
+    # launch condition with error 1603, and only clean installs work.
+    $upgradeCode = (Get-Rows $db "SELECT Value FROM Property WHERE Property = 'UpgradeCode'" 1)[0][0]
+    if (-not $upgradeCode) { throw "The MSI has no UpgradeCode" }
+    Invoke-Sql "DELETE FROM Upgrade"
+    # 1 = msidbUpgradeAttributesMigrateFeatures; the maximum is exclusive.
+    Insert 'Upgrade' ([ordered]@{ UpgradeCode = $upgradeCode; VersionMax = $wxsVersion; Attributes = [int]1; ActionProperty = 'WIX_UPGRADE_DETECTED' })
+    # 2 = msidbUpgradeAttributesOnlyDetect; the minimum is exclusive, so the same
+    # version is not a downgrade.
+    Insert 'Upgrade' ([ordered]@{ UpgradeCode = $upgradeCode; VersionMin = $wxsVersion; Attributes = [int]2; ActionProperty = 'WIX_DOWNGRADE_DETECTED' })
+    Write-Host "Upgrade:  replaces versions below $wxsVersion, refuses to replace newer ones"
+
     # ---- put the cabinet in and correct the recorded size -------------------
     # _Streams will not take a stream as a query parameter, so build the row
     # and insert it. 1 = msiViewModifyInsert.
@@ -358,6 +375,12 @@ $seq = @{}
 foreach ($r in (Get-Rows $vdb "SELECT Action, Sequence FROM InstallExecuteSequence" 2)) { $seq[$r[0]] = [int]$r[1] }
 Assert ($seq['InstallServices'] -and $seq['StartServices'] -and $seq['StopServices'] -and $seq['DeleteServices']) 'service actions are in the install sequence'
 Assert ($seq['RemoveExistingProducts'] -gt $seq['InstallInitialize']) 'an upgrade that fails rolls back to the old version (RemoveExistingProducts after InstallInitialize)'
+$upg = @{}
+foreach ($r in (Get-Rows $vdb "SELECT ActionProperty, VersionMin, VersionMax, Attributes FROM Upgrade" 4)) { $upg[$r[0]] = $r }
+Assert ($upg['WIX_UPGRADE_DETECTED'] -and $upg['WIX_UPGRADE_DETECTED'][1] -eq '' -and $upg['WIX_UPGRADE_DETECTED'][2] -eq $wxsVersion) `
+       "older versions (below $wxsVersion) are upgraded"
+Assert ($upg['WIX_DOWNGRADE_DETECTED'] -and $upg['WIX_DOWNGRADE_DETECTED'][1] -eq $wxsVersion -and $upg['WIX_DOWNGRADE_DETECTED'][2] -eq '' -and $upg['WIX_DOWNGRADE_DETECTED'][3] -eq '2') `
+       "only versions above $wxsVersion count as a downgrade"
 Assert ((Get-Rows $vdb "SELECT FileSize FROM File WHERE File = '$fileKey'" 1)[0][0] -eq "$newSize") `
        "File table records $newSize bytes"
 Assert ($version -eq $wxsVersion) "ProductVersion is $wxsVersion, matching FoghornClient.wxs"
