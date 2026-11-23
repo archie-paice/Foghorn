@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-var version = "1.2.0"
+var version = "1.2.1"
 
 const firstRunFile = "FIRST-RUN.txt"
 
