@@ -12,6 +12,9 @@
 # Shell / systemd / Linux-only files always keep LF
 *.sh          text eol=lf
 *.service     text eol=lf
+Dockerfile    text eol=lf
+*.dockerignore text eol=lf
+docker-compose.yml text eol=lf
 
 # Source: normal text
 *.go   text

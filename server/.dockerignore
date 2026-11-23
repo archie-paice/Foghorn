@@ -1,0 +1,6 @@
+Dockerfile
+.dockerignore
+foghorn-server
+foghorn-server.exe
+foghorn-data/
+*.log

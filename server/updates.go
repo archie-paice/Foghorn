@@ -283,6 +283,12 @@ func serverAssetName() string {
 // selfUpdate reports whether this server can replace its own program, and if
 // not, why not.
 func (a *App) selfUpdate() (exe string, managed bool, reason string) {
+	// In a container the program is part of the image: a replaced binary would
+	// vanish when the container is recreated, so update the image instead.
+	if os.Getenv("FOGHORN_IN_CONTAINER") != "" {
+		return "", false, "This server runs in a container. Update it by pulling or rebuilding the image " +
+			"(for example: git pull, then docker compose up -d --build). Your data is kept."
+	}
 	if serverAssetName() == "" {
 		return "", false, "There is no published build for " + runtime.GOOS + "/" + runtime.GOARCH + "."
 	}

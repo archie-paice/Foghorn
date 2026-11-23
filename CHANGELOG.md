@@ -31,6 +31,11 @@ rolled out from **Updates** in the console. See [docs/UPDATING.md](docs/UPDATING
     SYSTEM's profile.
   - `FoghornClient.exe --update-now` (as administrator) makes it check
     straight away, and `--status` shows whether it is running.
+- **Docker.** `server/Dockerfile` and a `docker-compose.yml` run the server
+  in a small Alpine container: a non-root user, data in a `/data` volume, and
+  a health check on `/healthz`. In a container, **Update server** explains
+  that you update by rebuilding the image, and `reset-password` gives the
+  `docker compose` commands. See INSTALL-SERVER.md → Appendix C.
 - **Release workflow.** Pushing a tag `vX.Y.Z` publishes `dist/` as a GitHub
   release, after checking that every version number agrees and the checksums
   match.

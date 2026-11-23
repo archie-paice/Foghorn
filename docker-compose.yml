@@ -1,0 +1,24 @@
+# Foghorn server with Docker Compose.
+#
+#   docker compose up -d --build
+#   docker compose logs foghorn        # first run prints the admin password and client key
+#
+# Then browse to http://<this host>:8080/. Full guide: docs/INSTALL-SERVER.md, Appendix C.
+
+services:
+  foghorn:
+    build: ./server
+    image: foghorn-server:latest
+    container_name: foghorn
+    restart: unless-stopped
+    ports:
+      # Host port: set FOGHORN_PORT (e.g. in a .env file next to this one) to change it.
+      - "${FOGHORN_PORT:-8080}:8080"
+    volumes:
+      - foghorn-data:/data
+    environment:
+      # Times shown in the console and used by schedules.
+      TZ: Europe/London
+
+volumes:
+  foghorn-data:

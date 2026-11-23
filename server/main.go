@@ -268,6 +268,9 @@ func resetPassword(dir, username string) error {
 
 // serviceHint is the command that stops or starts the server on this OS.
 func serviceHint(verb string) string {
+	if os.Getenv("FOGHORN_IN_CONTAINER") != "" {
+		return "docker compose " + verb + " foghorn"
+	}
 	if runtime.GOOS == "windows" {
 		return "foghorn-server service " + verb
 	}

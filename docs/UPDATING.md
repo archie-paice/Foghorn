@@ -35,6 +35,7 @@ the files and start it again.
 | Under systemd, installed as in [INSTALL-SERVER.md](INSTALL-SERVER.md#a1-install) from 1.2 | Yes. systemd restarts it on the new version. |
 | Under systemd, installed before 1.2 (program in `/usr/local/bin`) | Not until you move it once: see [Upgrading](INSTALL-SERVER.md#a6-looking-after-it). The page tells you this. |
 | In a command window (`foghorn-server run`) | It installs the update, then asks you to restart it yourself. |
+| In Docker ([INSTALL-SERVER.md, Appendix C](INSTALL-SERVER.md#appendix-c-running-in-docker)) | No. The program is part of the image, so update the image: `git pull`, then `docker compose up -d --build`. The page tells you this. Your data volume is kept. |
 
 ## Updating the PCs
 

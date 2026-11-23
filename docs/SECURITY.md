@@ -11,6 +11,7 @@ not, and what to do about the gaps. Read it before going live.
 - [ ] The server machine is one only IT staff can log on to.
 - [ ] You have decided about **HTTPS** (see below) — and if staying on HTTP, you know what that exposes.
 - [ ] The Foghorn port is reachable **only from inside your network**. Never forward it from the internet.
+- [ ] In Docker: Docker's published ports can bypass host firewalls such as `ufw`. Check the port is not reachable from outside, or publish it on one internal address only (e.g. `"10.0.0.5:8080:8080"` in `docker-compose.yml`).
 - [ ] You have agreed who may send **Urgent / Full screen** alerts and when. That is a policy question, not a technical one, and it matters most.
 
 ## Who can do what

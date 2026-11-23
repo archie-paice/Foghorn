@@ -14,7 +14,7 @@ Active Directory.
 
 | Part | Runs on |
 |---|---|
-| **Server** + web console | Windows Server 2016+ / Windows 10–11, **or** 64-bit Linux with systemd |
+| **Server** + web console | Windows Server 2016+ / Windows 10–11, **or** 64-bit Linux with systemd, **or** Docker |
 | **Desktop client** | Windows 10 and 11 (the PCs that receive alerts) |
 | **Web console** | Any modern browser, on any device |
 
@@ -115,6 +115,20 @@ Then continue from step 2 of the quick start. Good to know:
 HTTPS, reverse proxies, upgrading, password resets, moving between Windows and
 Linux, and removal are all covered in
 **[docs/INSTALL-SERVER.md — Appendix A](docs/INSTALL-SERVER.md#appendix-a-installing-on-linux)**.
+
+## Running the server in Docker
+
+```bash
+docker compose up -d --build
+docker compose logs foghorn      # temporary admin password + client key
+```
+
+Then browse to `http://<docker host>:8080/` and continue from step 2 of the
+quick start. Data lives in the `foghorn-data` volume. Set `TZ` in
+`docker-compose.yml` to your time zone, because schedules run on that clock.
+You update by rebuilding the image, not with **Update server**. Ports, HTTPS,
+backups, password resets and IP-address caveats are in
+**[docs/INSTALL-SERVER.md — Appendix C](docs/INSTALL-SERVER.md#appendix-c-running-in-docker)**.
 
 ## How it fits together
 

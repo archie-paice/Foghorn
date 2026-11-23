@@ -263,3 +263,11 @@ func main() { fmt.Println("`+ver+`") }
 		t.Fatal("the previous program should be kept as .old for rollback")
 	}
 }
+
+func TestSelfUpdateOffInContainer(t *testing.T) {
+	t.Setenv("FOGHORN_IN_CONTAINER", "1")
+	a := &App{}
+	if _, managed, reason := a.selfUpdate(); reason == "" || managed {
+		t.Fatalf("in a container: managed=%v reason=%q, want a reason and not managed", managed, reason)
+	}
+}
