@@ -325,7 +325,15 @@ namespace Foghorn
                 string dir = Path.Combine(Path.GetDirectoryName(Log.FilePath), "sounds");
                 Directory.CreateDirectory(dir);
                 string path = Path.Combine(dir, id + ext);
-                if (File.Exists(path)) return path;
+                if (File.Exists(path))
+                {
+                    // The id is the start of the file's SHA-256, so a copy that was
+                    // damaged (a PC that lost power mid-write leaves a file of zeros)
+                    // can be told apart from a good one, and fetched again.
+                    if (MatchesId(path, id)) return path;
+                    Log.Write("Cached sound " + id + " is damaged; downloading it again.");
+                    File.Delete(path);
+                }
 
                 Config cfg = Config.Load();
                 if (!cfg.IsValid) return "";
@@ -349,6 +357,13 @@ namespace Foghorn
                         if (total > 6 * 1024 * 1024) throw new InvalidDataException("sound is larger than the server allows");
                         dst.Write(buf, 0, n);
                     }
+                    dst.Flush(true); // on the disk before it is trusted, not just in the cache
+                }
+                if (!MatchesId(tmp, id))
+                {
+                    File.Delete(tmp);
+                    Log.Write("Could not fetch sound " + id + ": the download did not match its id.");
+                    return "";
                 }
                 try { File.Move(tmp, path); }
                 catch { if (File.Exists(tmp)) File.Delete(tmp); } // another session got there first
@@ -359,6 +374,22 @@ namespace Foghorn
                 Log.Write("Could not fetch sound " + id + ": " + ex.Message);
                 return "";
             }
+        }
+
+        /// <summary>True when the file's SHA-256 starts with the sound id, as the server names them.</summary>
+        static bool MatchesId(string path, string id)
+        {
+            try
+            {
+                byte[] sum;
+                using (var f = File.OpenRead(path))
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                    sum = sha.ComputeHash(f);
+                var hex = new StringBuilder();
+                for (int i = 0; i < sum.Length && hex.Length < id.Length; i++) hex.Append(sum[i].ToString("x2"));
+                return string.Equals(hex.ToString(0, Math.Min(hex.Length, id.Length)), id, StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
         }
 
         /// <summary>Used by --status. Returns null when all is well, otherwise a sentence explaining what is wrong.</summary>

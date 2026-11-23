@@ -27,14 +27,14 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Shows alerts sent from the Foghorn server")]
 [assembly: AssemblyCompany("Archie Paice")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Archie Paice. MIT licence.")]
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.2.1.0")]
+[assembly: AssemblyFileVersion("1.2.1.0")]
 
 namespace Foghorn
 {
     static class Program
     {
-        public const string Version = "1.2.0";
+        public const string Version = "1.2.1";
 
         /// <summary>
         /// Shown in --help and --status. Whoever is troubleshooting a PC should

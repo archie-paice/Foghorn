@@ -2,7 +2,18 @@
 
 All notable changes to Foghorn are listed here, newest first.
 
-## Unreleased
+## 1.2.1
+
+Fixes custom alert sounds going silent, and adds Discord webhooks. PCs on
+1.2.0 can be updated from **Updates** in the console.
+
+### Fixed
+- **Custom sounds stopped playing after a PC lost power or crashed.** If that
+  happened soon after a sound was downloaded, the cached copy could be left
+  full of zeros, and every alert using it then failed with "not a valid wave
+  file". The client now checks each cached sound against its id (the start of
+  its SHA-256) and downloads it again if it doesn't match. New downloads are
+  checked the same way and written to disk before they are used.
 
 ### Added
 - **Discord webhooks.** Paste a Discord channel's webhook URL into
